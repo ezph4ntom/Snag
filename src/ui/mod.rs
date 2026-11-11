@@ -1,4 +1,5 @@
-//! The window: Clips (trimmer), Settings, Quality and Appearance tabs.
+//! The window: Live (preview), Sound (mixer), Clips (trimmer), Settings,
+//! Quality and Appearance tabs, under Snag's own title bar (`chrome.rs`).
 //!
 //! Runs as its own process (`snag.exe --ui`), started by the core. It
 //! reads `CoreStatus` lines on stdin and writes `UiToCore` commands on stdout
@@ -6,9 +7,12 @@
 //! core is told to reload them.
 
 mod appearance_tab;
+mod chrome;
 mod dialogs;
+mod live_tab;
 mod quality_tab;
 mod settings_tab;
+mod sound_tab;
 mod trimmer_tab;
 
 use std::io::{BufRead, Write};
@@ -25,6 +29,8 @@ use crate::themes::Theme;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
+    Live,
+    Sound,
     Clips,
     Settings,
     Quality,
@@ -32,12 +38,38 @@ pub enum Tab {
 }
 
 impl Tab {
+    const ALL: [Tab; 6] = [Tab::Live, Tab::Sound, Tab::Clips, Tab::Settings, Tab::Quality, Tab::Appearance];
+
     fn parse(s: &str) -> Tab {
         match s {
+            "live" => Tab::Live,
+            "sound" | "audio" => Tab::Sound,
             "settings" => Tab::Settings,
             "quality" => Tab::Quality,
             "appearance" | "themes" => Tab::Appearance,
             _ => Tab::Clips,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Tab::Live => "Live",
+            Tab::Sound => "Sound",
+            Tab::Clips => "Clips & trimmer",
+            Tab::Settings => "Settings",
+            Tab::Quality => "Quality",
+            Tab::Appearance => "Appearance",
+        }
+    }
+
+    fn icon(self) -> chrome::Icon {
+        match self {
+            Tab::Live => chrome::Icon::Live,
+            Tab::Sound => chrome::Icon::Sound,
+            Tab::Clips => chrome::Icon::Scissors,
+            Tab::Settings => chrome::Icon::Gear,
+            Tab::Quality => chrome::Icon::Monitor,
+            Tab::Appearance => chrome::Icon::Palette,
         }
     }
 }
@@ -99,12 +131,22 @@ struct App {
     last_theme_check: Instant,
     trimmer: trimmer_tab::TrimmerTab,
     settings_tab: settings_tab::SettingsTab,
+    live: live_tab::LiveTab,
+    sound: sound_tab::SoundTab,
     quality: quality_tab::QualityTab,
     appearance: appearance_tab::AppearanceTab,
     /// Window to minimize (without focus) once eframe has shown it.
     minimize_pending: Option<isize>,
     /// The header logo, drawn in the theme's text and accent colors.
     logo: Option<(egui::TextureHandle, (Color32, Color32))>,
+    /// Whether the core is currently sending preview frames.
+    preview_on: bool,
+    /// Tab bar being dragged: the edge it would dock to.
+    dock_target: Option<crate::config::TabDock>,
+    /// Size of the tab bar last frame (for the snap preview).
+    tab_bar_size: egui::Vec2,
+    /// The area below the title bar last frame.
+    content_rect: egui::Rect,
 }
 
 pub fn run(args: UiArgs) -> Result<()> {
@@ -115,6 +157,8 @@ pub fn run(args: UiArgs) -> Result<()> {
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Snag")
+        // Snag draws its own title bar (see `chrome.rs`).
+        .with_decorations(false)
         .with_inner_size([1120.0, 740.0])
         .with_min_inner_size([820.0, 540.0])
         .with_icon(app_icon());
@@ -138,6 +182,12 @@ pub fn run(args: UiArgs) -> Result<()> {
             let ctx = cc.egui_ctx.clone();
             let (theme, theme_error) = crate::themes::load(&settings.theme);
             crate::themes::apply(&ctx, &theme, true);
+            // UI size is set with the -/+ buttons in Settings only.
+            ctx.options_mut(|o| o.zoom_with_keyboard = false);
+            ctx.set_zoom_factor(settings.ui.scale);
+            if let Some(h) = hwnd {
+                chrome::install(h, &ctx);
+            }
 
             // stdin reader: status and commands from the core.
             let (tx, incoming) = channel::<CoreToUi>();
@@ -177,10 +227,16 @@ pub fn run(args: UiArgs) -> Result<()> {
                 last_theme_check: Instant::now(),
                 trimmer,
                 settings_tab: settings_tab::SettingsTab::default(),
+                live: live_tab::LiveTab::default(),
+                sound: sound_tab::SoundTab::default(),
                 quality: quality_tab::QualityTab::default(),
                 appearance: appearance_tab::AppearanceTab::default(),
                 minimize_pending: if minimized { hwnd } else { None },
                 logo: None,
+                preview_on: false,
+                dock_target: None,
+                tab_bar_size: egui::vec2(160.0, 44.0),
+                content_rect: egui::Rect::NOTHING,
             }))
         }),
     )
@@ -303,56 +359,92 @@ impl App {
         }
     }
 
-    fn tab_bar(&mut self, ui: &mut egui::Ui) {
-        let c = self.shared.theme.colors.clone();
-        // Redraw the logo when the theme's colors change: the glyph takes the
-        // text color and the dot follows the accent, as on the brand board.
+    /// The logo texture, redrawn when the theme's colors change: the glyph
+    /// takes the text color and the dot follows the accent.
+    fn logo(&mut self, ctx: &egui::Context) -> Option<egui::TextureHandle> {
+        let c = &self.shared.theme.colors;
         let key = (c.text.0, c.accent.0);
         if self.logo.as_ref().is_none_or(|(_, k)| *k != key) {
             let rgb = |c: Color32| [c.r(), c.g(), c.b()];
             let px = crate::brand::glyph_rgba(64, rgb(c.text.0), rgb(c.accent.0));
             let image = egui::ColorImage::from_rgba_unmultiplied([64, 64], &px);
-            let tex = ui.ctx().load_texture("snag-logo", image, egui::TextureOptions::LINEAR);
+            let tex = ctx.load_texture("snag-logo", image, egui::TextureOptions::LINEAR);
             self.logo = Some((tex, key));
         }
-        ui.horizontal(|ui| {
-            ui.add_space(4.0);
-            if let Some((tex, _)) = &self.logo {
-                let (rect, _) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::hover());
-                let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-                ui.painter().image(tex.id(), rect, uv, Color32::WHITE);
-            }
-            // The wordmark: lowercase, bold, tightly tracked (-0.04 em).
-            ui.label(
-                RichText::new("snag")
-                    .family(crate::themes::brand_bold_family())
-                    .size(21.0)
-                    .extra_letter_spacing(-0.8)
-                    .color(c.text.0),
-            );
-            ui.add_space(14.0);
-            for (tab, label) in [
-                (Tab::Clips, "Clips & trimmer"),
-                (Tab::Settings, "Settings"),
-                (Tab::Quality, "Quality"),
-                (Tab::Appearance, "Appearance"),
-            ] {
+        self.logo.as_ref().map(|(t, _)| t.clone())
+    }
+
+    /// The tab bar on whichever edge it's docked to. Drag its grip (or any
+    /// empty part of it) to another edge to move it there.
+    fn tab_bar(&mut self, ui: &mut egui::Ui, vertical: bool) {
+        let c = self.shared.theme.colors.clone();
+        let icons = self.shared.settings.ui.icon_tabs;
+        let bar = ui.max_rect();
+        let bg = ui.interact(bar, egui::Id::unique("tabbar-bg"), egui::Sense::drag());
+        let mut dragging = bg.dragged();
+        let mut released = bg.drag_stopped();
+
+        let layout = if vertical {
+            egui::Layout::top_down(egui::Align::Center)
+        } else {
+            egui::Layout::left_to_right(egui::Align::Center)
+        };
+        ui.with_layout(layout, |ui| {
+            let grip_size = if vertical { egui::vec2(28.0, 14.0) } else { egui::vec2(14.0, 28.0) };
+            let (grip_rect, grip) = ui.allocate_exact_size(grip_size, egui::Sense::drag());
+            let grip = grip.on_hover_text("Drag to move the tab bar to another edge").on_hover_cursor(egui::CursorIcon::Grab);
+            chrome::paint_grip(ui.painter(), grip_rect, vertical, if grip.hovered() { c.text.0 } else { c.text_dim.0 });
+            dragging |= grip.dragged();
+            released |= grip.drag_stopped();
+            for tab in Tab::ALL {
                 let selected = self.tab == tab;
-                let text = if selected {
-                    RichText::new(label).color(self.shared.theme.colors.accent_text.0)
+                let (fill, fg) = if selected { (c.accent.0, c.accent_text.0) } else { (Color32::TRANSPARENT, c.text.0) };
+                let resp = if icons {
+                    let (rect, resp) = ui.allocate_exact_size(egui::vec2(38.0, 38.0), egui::Sense::click());
+                    let bgc = if selected { fill } else if resp.hovered() { c.widget_hover.0 } else { fill };
+                    ui.painter().rect_filled(rect, self.shared.theme.corner_radius, bgc);
+                    chrome::paint_icon(ui.painter(), rect.shrink(9.0), tab.icon(), fg);
+                    resp.on_hover_text(tab.label())
                 } else {
-                    RichText::new(label)
+                    let mut b = egui::Button::new(RichText::new(tab.label()).color(fg)).fill(fill);
+                    if vertical {
+                        b = b.min_size(egui::vec2(ui.available_width(), 30.0));
+                    }
+                    ui.add(b)
                 };
-                let button = egui::Button::new(text).fill(if selected {
-                    self.shared.theme.colors.accent.0
-                } else {
-                    Color32::TRANSPARENT
-                });
-                if ui.add(button).clicked() {
+                if resp.clicked() {
                     self.tab = tab;
                 }
             }
         });
+
+        if dragging {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+            if let Some(p) = ui.ctx().pointer_latest_pos() {
+                self.dock_target = Some(chrome::nearest_edge(self.content_rect, p));
+            }
+        }
+        if released {
+            if let Some(edge) = self.dock_target.take() {
+                if edge != self.shared.settings.ui.tab_dock {
+                    self.shared.settings.ui.tab_dock = edge;
+                    self.shared.mark_dirty();
+                }
+            }
+        }
+    }
+
+    /// While the tab bar is dragged: a highlight where it would land.
+    fn dock_preview(&self, ctx: &egui::Context) {
+        let Some(edge) = self.dock_target else { return };
+        let c = &self.shared.theme.colors;
+        let size = self.tab_bar_size;
+        // A bar moved between horizontal and vertical swaps its thickness.
+        let thickness = egui::vec2(size.x.min(size.y).max(56.0).max(if self.shared.settings.ui.icon_tabs { 56.0 } else { 170.0 }), size.y.min(size.x).max(44.0));
+        let rect = chrome::dock_rect(self.content_rect, edge, thickness);
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("dock-preview")));
+        painter.rect_filled(rect, 6.0, c.accent.0.gamma_multiply(0.25));
+        painter.rect_stroke(rect.shrink(1.0), 6.0, egui::Stroke::new(2.0, c.accent.0), egui::StrokeKind::Inside);
     }
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
@@ -440,29 +532,82 @@ impl eframe::App for App {
         self.flush_outbox();
         self.theme_hot_reload(ctx);
         self.trimmer.poll_background(&self.shared.settings);
+        // UI size (Settings > Window).
+        if (ctx.zoom_factor() - self.shared.settings.ui.scale).abs() > 0.001 {
+            ctx.set_zoom_factor(self.shared.settings.ui.scale);
+        }
+        // Preview frames only while the Live tab is on screen.
+        let minimized = ctx.input(|i| i.viewport().minimized.unwrap_or(false));
+        let want_preview = self.tab == Tab::Live && !minimized && self.connected;
+        if want_preview != self.preview_on {
+            self.preview_on = want_preview;
+            self.shared.outbox.push(UiToCore::Preview { on: want_preview });
+            self.flush_outbox();
+        }
+        self.sound.set_visible(self.tab == Tab::Sound && !minimized, ctx);
         // Wake up for debounced saves and the theme/clip-list checks.
         ctx.request_repaint_after(Duration::from_millis(if self.shared.dirty_at.is_some() { 100 } else { 1000 }));
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let panel = self.shared.theme.colors.panel.0;
+        use crate::config::TabDock;
+        let ctx = ui.ctx().clone();
+        let colors = self.shared.theme.colors.clone();
+        let panel = colors.panel.0;
         let margin = egui::Margin::symmetric(8, 6);
-        egui::Panel::top("tabs")
-            .frame(egui::Frame::new().fill(panel).inner_margin(margin))
-            .show(ui, |ui| self.tab_bar(ui));
+        let border = egui::Stroke::new(1.0, colors.border.0);
+
+        let logo = self.logo(&ctx);
+        egui::Panel::top("title")
+            .exact_size(chrome::TITLE_H)
+            .frame(egui::Frame::new().fill(panel))
+            .show_separator_line(false)
+            .show(ui, |ui| chrome::title_bar(ui, &colors, logo.as_ref()));
+        self.content_rect = ui.available_rect_before_wrap();
+
+        let dock = self.shared.settings.ui.tab_dock;
+        let icons = self.shared.settings.ui.icon_tabs;
+        let bar_frame = egui::Frame::new().fill(panel).inner_margin(margin).stroke(egui::Stroke::NONE);
+        let side_w = if icons { 56.0 } else { 172.0 };
+        let r = match dock {
+            TabDock::Top => egui::Panel::top("tabs").frame(bar_frame).show(ui, |ui| self.tab_bar(ui, false)).response,
+            TabDock::Bottom => egui::Panel::bottom("tabs").frame(bar_frame).show(ui, |ui| self.tab_bar(ui, false)).response,
+            TabDock::Left => egui::Panel::left("tabs-v")
+                .resizable(false)
+                .exact_size(side_w)
+                .frame(bar_frame)
+                .show(ui, |ui| self.tab_bar(ui, true))
+                .response,
+            TabDock::Right => egui::Panel::right("tabs-v")
+                .resizable(false)
+                .exact_size(side_w)
+                .frame(bar_frame)
+                .show(ui, |ui| self.tab_bar(ui, true))
+                .response,
+        };
+        self.tab_bar_size = r.rect.size();
         egui::Panel::bottom("status")
             .frame(egui::Frame::new().fill(panel).inner_margin(margin))
             .show(ui, |ui| self.status_bar(ui));
-        let bg = self.shared.theme.colors.background.0;
+        let bg = colors.background.0;
         let m = self.shared.theme.spacing.window_margin.clamp(0.0, 127.0) as i8;
         egui::CentralPanel::default_margins()
             .frame(egui::Frame::new().fill(bg).inner_margin(egui::Margin::same(m)))
             .show(ui, |ui| match self.tab {
+                Tab::Live => self.live.ui(ui, &mut self.shared),
+                Tab::Sound => self.sound.ui(ui, &mut self.shared),
                 Tab::Clips => self.trimmer.ui(ui, &mut self.shared),
                 Tab::Settings => self.settings_tab.ui(ui, &mut self.shared),
                 Tab::Quality => self.quality.ui(ui, &mut self.shared),
                 Tab::Appearance => self.appearance.ui(ui, &mut self.shared, self.theme_error.as_deref()),
             });
+        self.dock_preview(&ctx);
+        // A 1 px outline around the whole window (no Windows frame anymore).
+        let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+        if !maximized {
+            let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("window-outline")));
+            painter.rect_stroke(ctx.content_rect(), 0.0, border, egui::StrokeKind::Inside);
+        }
         self.flush_outbox();
     }
 }

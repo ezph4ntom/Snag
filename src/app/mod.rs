@@ -33,11 +33,15 @@ use windows::core::{PCWSTR, w};
 
 use crate::hotkeys::{self, Hotkey, ID_CLIP, ID_SCREENSHOT};
 use controller::{Controller, Event};
+pub use ipc::HotkeyReport;
 
 const CLASS_NAME: PCWSTR = w!("SnagCoreWindow");
 const WM_APP_REQUEST: u32 = WM_APP + 1;
 const WM_APP_SHOW: u32 = WM_APP + 2;
 const WM_APP_QUIT: u32 = WM_APP + 3;
+const HOOK_REFRESH_TIMER: usize = 1;
+/// `snag.exe --tab <name>` while Snag runs opens that tab (WPARAM index).
+const SHOW_TABS: [&str; 6] = ["clips", "live", "sound", "settings", "quality", "appearance"];
 
 /// Work only the main thread may do.
 pub enum MainRequest {
@@ -78,8 +82,23 @@ fn send(ev: Event) {
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
-        WM_HOTKEY => send(Event::Hotkey(wp.0 as i32)),
-        WM_APP_SHOW => send(Event::ShowUi),
+        WM_HOTKEY => {
+            // The keyboard hook normally sees the press first (and swallows
+            // it); this arrives when it couldn't, e.g. while a program running
+            // as administrator is focused.
+            let id = wp.0 as i32;
+            if !keyhook::fired_recently(id) {
+                log::info!("hotkey {id} pressed (Windows hotkey)");
+                send(Event::Hotkey(id));
+            }
+        }
+        WM_INPUT => {
+            keyhook::on_raw_input(lp);
+            // SAFETY: WM_INPUT must still reach DefWindowProc for cleanup.
+            return unsafe { DefWindowProcW(hwnd, msg, wp, lp) };
+        }
+        WM_TIMER if wp.0 == HOOK_REFRESH_TIMER => keyhook::refresh(),
+        WM_APP_SHOW => send(Event::ShowUi(SHOW_TABS.get(wp.0).copied().unwrap_or("clips").to_string())),
         WM_APP_QUIT => send(Event::Tray(controller::TrayAction::Quit)),
         WM_APP_REQUEST => loop {
             let next = MAIN_QUEUE.lock().unwrap_or_else(|p| p.into_inner()).pop_front();
@@ -97,34 +116,63 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
 fn handle_request(hwnd: HWND, req: MainRequest) {
     match req {
         MainRequest::RegisterHotkeys { clip, screenshot } => {
-            // Windows' own hotkey registration where possible; the keyboard
-            // hook for anything Windows refuses, so any key can be a hotkey.
-            let mut notes = Vec::new();
+            // Every hotkey goes through the keyboard hook (it works in games
+            // that block normal hotkeys), plus Windows' own registration
+            // where Windows allows it (that one also works while a program
+            // running as administrator is focused). See `keyhook`.
+            let mut report = HotkeyReport::default();
             let mut hooked = Vec::new();
+            let mut registered = Vec::new();
             for (id, text, what) in [(ID_CLIP, clip, "Clip"), (ID_SCREENSHOT, screenshot, "Screenshot")] {
-                match Hotkey::parse(&text) {
+                let hk = match Hotkey::parse(&text) {
+                    Ok(hk) => hk,
                     Err(e) => {
                         hotkeys::unregister(hwnd, id);
-                        notes.push(format!("{what} hotkey \"{text}\": {e}"));
+                        log::error!("{what} hotkey \"{text}\" is invalid: {e}");
+                        report.errors.push(format!("{what} hotkey \"{text}\" doesn't work: {e}. Pick it again below."));
+                        continue;
                     }
-                    Ok(hk) => match hotkeys::register(hwnd, id, &hk) {
-                        Ok(()) => log::info!("{what} hotkey: {hk}"),
-                        Err(e) => {
-                            log::info!("{what} hotkey: {hk} via keyboard hook ({e})");
-                            hooked.push((id, hk));
-                            notes.push(format!(
-                                "{what} hotkey {hk} is caught with a keyboard hook (Windows wouldn't register it). It works everywhere except while a program running as administrator is focused."
-                            ));
-                        }
-                    },
+                };
+                hooked.push((id, hk));
+                match hotkeys::register(hwnd, id, &hk) {
+                    Ok(()) => {
+                        log::info!("{what} hotkey {hk}: keyboard hook + Windows hotkey");
+                        registered.push(id);
+                    }
+                    Err(e) => {
+                        log::warn!("{what} hotkey {hk}: keyboard hook only ({e})");
+                        report.hook_only.push(hk.to_string());
+                        let shown = hotkeys::display(&hk.to_string());
+                        report.notes.push(format!(
+                            "{what} hotkey {shown}: {e}, so Snag catches it with its keyboard hook. That works in games, \
+                             but not while a program running as administrator is focused."
+                        ));
+                    }
                 }
             }
-            keyhook::set_bindings(hooked);
-            send(Event::HotkeyNotes(notes));
+            if let Some(err) = keyhook::set_bindings(hooked.clone()) {
+                for (id, hk) in &hooked {
+                    let what = if *id == ID_CLIP { "Clip" } else { "Screenshot" };
+                    let shown = hotkeys::display(&hk.to_string());
+                    if registered.contains(id) {
+                        report.notes.push(format!(
+                            "{what} hotkey {shown} only works through Windows' hotkey system ({err}); some games block that while they're focused."
+                        ));
+                    } else {
+                        log::error!("{what} hotkey {hk} can't work: {err}");
+                        report.errors.push(format!("{what} hotkey {shown} can't work: {err}. Pick a different key."));
+                    }
+                }
+            }
+            send(Event::HotkeyReport(report));
         }
         MainRequest::BeginHotkeyCapture { target } => keyhook::begin_capture(target),
         MainRequest::CancelHotkeyCapture => keyhook::cancel_capture(),
-        MainRequest::UpdateKeyHook => keyhook::update_install(),
+        MainRequest::UpdateKeyHook => {
+            if let Some(e) = keyhook::update_install() {
+                log::error!("{e}");
+            }
+        }
         MainRequest::UpdateTray { recording, tooltip, clip_key, shot_key } => TRAY.with(|t| {
             if let Some(t) = t.borrow().as_ref() {
                 t.update(recording, &tooltip, &clip_key, &shot_key);
@@ -209,19 +257,38 @@ pub fn quit_running_instance() -> bool {
     }
 }
 
-/// Entry point of the core (tray) process.
-pub fn run_core() -> Result<()> {
+/// Entry point of the core (tray) process. `replace`: a running instance is
+/// asked to quit and this one takes over (used by "Restart as
+/// administrator").
+pub fn run_core(replace: bool) -> Result<()> {
     crate::win::set_dpi_awareness();
     crate::logging::init("core");
-    log::info!("Snag {} starting (pid {})", env!("CARGO_PKG_VERSION"), std::process::id());
+    log::info!(
+        "Snag {} starting (pid {}, {}, Windows build {}, keyboard layout {})",
+        env!("CARGO_PKG_VERSION"),
+        std::process::id(),
+        if crate::win::is_elevated() { "running as administrator" } else { "not elevated" },
+        crate::win::windows_build(),
+        crate::win::keyboard_layout_name()
+    );
 
     // Single instance: a second launch just asks the first to show its window.
     // SAFETY: named mutex creation; the handle intentionally lives until exit.
     unsafe {
-        let _mutex = CreateMutexW(None, true, w!("Local\\Snag.Core.SingleInstance"))?;
-        if GetLastError() == ERROR_ALREADY_EXISTS {
+        let mutex = CreateMutexW(None, true, w!("Local\\Snag.Core.SingleInstance"))?;
+        if GetLastError() == ERROR_ALREADY_EXISTS && replace {
             if let Ok(other) = FindWindowExW(Some(HWND_MESSAGE), None, CLASS_NAME, PCWSTR::null()) {
-                let _ = PostMessageW(Some(other), WM_APP_SHOW, WPARAM(0), LPARAM(0));
+                let _ = PostMessageW(Some(other), WM_APP_QUIT, WPARAM(0), LPARAM(0));
+            }
+            // The mutex is released (abandoned) when the old instance exits.
+            let r = windows::Win32::System::Threading::WaitForSingleObject(mutex, 15_000);
+            log::info!("took over from the previous instance (wait result {:#x})", r.0);
+        } else if GetLastError() == ERROR_ALREADY_EXISTS {
+            let args: Vec<String> = std::env::args().collect();
+            let tab = args.iter().position(|a| a == "--tab").and_then(|i| args.get(i + 1));
+            let index = tab.and_then(|t| SHOW_TABS.iter().position(|s| s == t)).unwrap_or(0);
+            if let Ok(other) = FindWindowExW(Some(HWND_MESSAGE), None, CLASS_NAME, PCWSTR::null()) {
+                let _ = PostMessageW(Some(other), WM_APP_SHOW, WPARAM(index), LPARAM(0));
             }
             log::info!("already running; asked the running instance to show its window");
             return Ok(());
@@ -248,6 +315,10 @@ pub fn run_core() -> Result<()> {
 
     let hwnd = create_message_window()?;
     MAIN_HWND.store(hwnd.0 as isize, Ordering::Relaxed);
+    // SAFETY: a timer on our own window (re-installs the keyboard hook).
+    unsafe {
+        SetTimer(Some(hwnd), HOOK_REFRESH_TIMER, 30_000, None);
+    }
 
     let tray = tray::Tray::new(tx.clone()).context("creating tray icon")?;
     TRAY.with(|t| *t.borrow_mut() = Some(tray));

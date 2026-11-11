@@ -14,6 +14,7 @@
 
 pub mod convert;
 pub mod d3d;
+pub mod preview;
 pub mod screenshot;
 pub mod wgc;
 

@@ -9,6 +9,7 @@
 //! * **Precise** mode re-encodes, so it can start on any frame. Slower and
 //!   very slightly lossy (high bitrate keeps it visually identical).
 
+pub mod audio;
 pub mod player;
 
 use std::io::{BufRead, BufReader};
@@ -40,6 +41,8 @@ pub struct ClipProbe {
     /// packet of any stream; with audio that's often a few ms before the
     /// first video frame, and ignoring it would cut one frame early.
     pub video_offset: f64,
+    /// Number of audio tracks.
+    pub audio_tracks: usize,
 }
 
 impl ClipProbe {
@@ -80,6 +83,11 @@ impl ClipProbe {
     /// `-ss` value that lands on `frame` (plus `bias` seconds).
     pub fn seek_time(&self, frame: usize, bias: f64) -> f64 {
         (self.video_offset + self.time_of(frame) + bias).max(0.0)
+    }
+
+    /// File time of `frame`, for decoding the sound that goes with it.
+    pub fn audio_seek_time(&self, frame: usize) -> f64 {
+        self.video_offset + self.time_of(frame)
     }
 
     pub fn bitrate_kbps(&self) -> u32 {
@@ -138,6 +146,12 @@ pub fn probe(path: &Path) -> Result<ClipProbe> {
     if keyframes.first() != Some(&0) {
         keyframes.insert(0, 0);
     }
+    let audio_tracks = crate::win::hidden_command(crate::paths::ffprobe_exe())
+        .args(["-v", "error", "-select_streams", "a", "-show_entries", "stream=index", "-of", "csv=p=0"])
+        .arg(path)
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).lines().filter(|l| !l.trim().is_empty()).count())
+        .unwrap_or(0);
     Ok(ClipProbe {
         path: path.to_path_buf(),
         width: stream["width"].as_u64().unwrap_or(0) as u32,
@@ -147,6 +161,7 @@ pub fn probe(path: &Path) -> Result<ClipProbe> {
         keyframes,
         bytes: std::fs::metadata(path).map(|m| m.len()).unwrap_or(0),
         video_offset: (t0 - file_start).max(0.0),
+        audio_tracks,
     })
 }
 
@@ -289,6 +304,7 @@ mod tests {
             keyframes: keys,
             bytes: 0,
             video_offset: 0.0,
+            audio_tracks: 1,
         }
     }
 

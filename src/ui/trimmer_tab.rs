@@ -15,6 +15,7 @@ use eframe::egui::{self, Color32, CursorIcon, Key, Pos2, Rect, RichText, Sense, 
 
 use super::{Shared, dim};
 use crate::config::Settings;
+use crate::trimmer::audio::AudioPlayer;
 use crate::trimmer::player::{Decoder, Frame, preview_size};
 use crate::trimmer::{ClipProbe, Output, TrimJob, TrimMode, effective_start, probe, trim};
 
@@ -49,6 +50,8 @@ struct Loaded {
     cache: VecDeque<Frame>,
     /// Playing since (instant, frame at that instant).
     playing: Option<(Instant, usize)>,
+    /// The clip's sound while playing (follows `playing`).
+    audio: Option<AudioPlayer>,
     drag: Option<Drag>,
     /// Last time the playhead moved; an idle decoder is stopped after a few
     /// seconds so a paused clip holds no ffmpeg process (or its memory).
@@ -149,6 +152,7 @@ impl TrimmerTab {
                             decoder_started: Instant::now(),
                             cache: VecDeque::new(),
                             playing: None,
+                            audio: None,
                             drag: None,
                             last_activity: Instant::now(),
                         });
@@ -304,6 +308,7 @@ impl TrimmerTab {
         if !exporting_overwrite {
             pump(&ctx, l);
         }
+        sync_audio(l, shared.settings.trimmer.preview_volume);
 
         // ---- preview -------------------------------------------------------
         let controls_h = 215.0; // room for the transport row to wrap on narrow windows
@@ -348,6 +353,18 @@ impl TrimmerTab {
             }
             if ui.button("Set end [O]").clicked() {
                 l.end = l.playhead.max(l.start + 1).min(n - 1);
+            }
+            ui.separator();
+            if p.audio_tracks == 0 {
+                ui.label(dim(shared, "No sound in this clip"));
+            } else {
+                let mut pct = (shared.settings.trimmer.preview_volume * 100.0).round() as u32;
+                ui.label("Sound").on_hover_text("Preview volume (doesn't change the clip)");
+                ui.spacing_mut().slider_width = 90.0;
+                if ui.add(egui::Slider::new(&mut pct, 0..=100).suffix(" %")).changed() {
+                    shared.settings.trimmer.preview_volume = pct as f32 / 100.0;
+                    shared.mark_dirty();
+                }
             }
             ui.separator();
             // Never split mid-text; on a narrow window it moves down whole.
@@ -493,6 +510,24 @@ impl TrimmerTab {
         });
         self.message = None;
         self.export = Some(Export { rx, progress: 0.0, cancel, overwrite });
+    }
+}
+
+/// Starts the clip's sound when playback starts (or restarts from another
+/// frame) and stops it when playback stops. The player lines itself up with
+/// the instant playback started, like the video does.
+fn sync_audio(l: &mut Loaded, volume: f32) {
+    match l.playing {
+        Some((t0, f0)) if l.probe.audio_tracks > 0 => {
+            if l.audio.as_ref().is_none_or(|a| a.anchor != t0) {
+                let from = l.probe.audio_seek_time(f0);
+                l.audio = Some(AudioPlayer::start(&l.probe.path, from, t0, volume));
+            }
+            if let Some(a) = &l.audio {
+                a.set_volume(volume);
+            }
+        }
+        _ => l.audio = None,
     }
 }
 

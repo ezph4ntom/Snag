@@ -37,15 +37,15 @@ pub enum Event {
     /// The foreground window changed (monitor it's on, owning process id,
     /// and window class for filtering shell transients).
     Foreground { monitor: isize, pid: u32, class: String },
-    /// Per-hotkey notes from registration (e.g. "caught with the hook").
-    HotkeyNotes(Vec<String>),
+    /// How the hotkeys were set up (notes, errors, hook-only keys).
+    HotkeyReport(super::HotkeyReport),
     /// The key press recorded for a hotkey being rebound (None = cancelled).
     HotkeyCaptured { target: String, hotkey: Option<String> },
     ClipDone(Result<ClipResult, String>),
     ScreenshotDone(Result<PathBuf, String>),
     FromUi(UiToCore),
-    /// A second `snag.exe` was started: show the window.
-    ShowUi,
+    /// A second `snag.exe` was started: show the window (on this tab).
+    ShowUi(String),
 }
 
 struct SaveJob {
@@ -72,7 +72,13 @@ pub struct Controller {
     focused_monitor: isize,
     /// Debounced focus change: (monitor, when it was first seen).
     pending_switch: Option<(isize, Instant)>,
-    hotkey_notes: Vec<String>,
+    hotkey_report: super::HotkeyReport,
+    /// The Sound choices, shared live with the recorder's audio thread.
+    audio_selection: std::sync::Arc<crate::audio::mixer::SharedSelection>,
+    /// Shown while a program running as administrator is focused and a
+    /// hotkey only works through the keyboard hook: (pid, text).
+    elevated_warning: Option<(u32, String)>,
+    elevated: bool,
     /// When a "press the new hotkey" capture started (it times out).
     capture_started: Option<Instant>,
     /// Taskbar theme the tray icon was drawn for.
@@ -114,7 +120,10 @@ impl Controller {
             session_counter: 0,
             focused_monitor: 0,
             pending_switch: None,
-            hotkey_notes: Vec::new(),
+            hotkey_report: Default::default(),
+            audio_selection: crate::audio::mixer::SharedSelection::new(Default::default()),
+            elevated_warning: None,
+            elevated: crate::win::is_elevated(),
             capture_started: None,
             light_taskbar: crate::win::taskbar_is_light(),
             last_clip: None,
@@ -235,18 +244,32 @@ impl Controller {
                 self.update_tray();
             }
             Event::Tray(TrayAction::OpenClipsFolder) => crate::win::reveal_in_explorer(&self.settings.clips_dir),
-            Event::Tray(TrayAction::OpenTrimmer) | Event::ShowUi => {
+            Event::Tray(TrayAction::OpenTrimmer) => {
                 let clip = self.last_clip.clone();
                 self.open_ui("clips", clip.as_deref(), true, false)
+            }
+            Event::ShowUi(tab) => {
+                let clip = if tab == "clips" { self.last_clip.clone() } else { None };
+                self.open_ui(&tab, clip.as_deref(), true, false)
             }
             Event::Tray(TrayAction::OpenSettings) => self.open_ui("settings", None, true, false),
             Event::Tray(TrayAction::Quit) => {}
             Event::Foreground { monitor, pid, class } => self.on_foreground(monitor, pid, &class),
-            Event::HotkeyNotes(notes) => {
-                for n in &notes {
-                    log::info!("hotkey: {n}");
+            Event::HotkeyReport(report) => {
+                self.hotkey_report = report;
+                self.elevated_warning = None;
+            }
+            Event::FromUi(UiToCore::RestartAsAdmin) => {
+                log::info!("restarting as administrator");
+                match crate::win::restart_elevated() {
+                    Ok(()) => {
+                        // The new instance asks this one to quit and takes over.
+                    }
+                    Err(e) => {
+                        log::warn!("restart as administrator: {e:#}");
+                        self.note = "Restart as administrator was cancelled".into();
+                    }
                 }
-                self.hotkey_notes = notes;
             }
             Event::FromUi(UiToCore::CaptureHotkey { target }) => {
                 self.capture_started = Some(Instant::now());
@@ -300,6 +323,9 @@ impl Controller {
                 error_beep();
             }
             Event::FromUi(UiToCore::ReloadSettings) => self.reload_settings(),
+            Event::FromUi(UiToCore::Preview { on }) => {
+                crate::capture::preview::WANTED.store(on, Ordering::Relaxed);
+            }
         }
     }
 
@@ -412,8 +438,10 @@ impl Controller {
             gpu_upload: self.settings.hardware.as_ref().is_some_and(|h| h.gpu_upload.contains(&v.encoder)),
             audio_bitrate_kbps: self.settings.audio.bitrate_kbps,
         };
+        self.audio_selection.set(self.settings.audio.clone());
+        let selection = self.audio_selection.clone();
         let audio: Option<crate::audio::AudioSourceFactory> = self.settings.audio.record_pc_audio.then(|| {
-            Box::new(|| Box::new(crate::audio::loopback::LoopbackSource::new()) as Box<dyn crate::audio::AudioSource>)
+            Box::new(move || Box::new(crate::audio::mixer::MixSource::new(selection)) as Box<dyn crate::audio::AudioSource>)
                 as crate::audio::AudioSourceFactory
         });
         let cursor = self.settings.capture.capture_cursor;
@@ -500,9 +528,36 @@ impl Controller {
         if monitor == 0 || Some(pid) == ui_pid || TRANSIENT.contains(&class) {
             return;
         }
+        self.check_elevated_foreground(pid);
         self.focused_monitor = monitor;
         if self.settings.capture.mode == CaptureMode::FollowFocus {
             self.pending_switch = Some((monitor, Instant::now()));
+        }
+    }
+
+    /// A program running as administrator gets focus while a hotkey only
+    /// works through the keyboard hook: Windows won't deliver keys to the
+    /// hook then, so say so instead of failing silently.
+    fn check_elevated_foreground(&mut self, pid: u32) {
+        if self.elevated || self.hotkey_report.hook_only.is_empty() {
+            self.elevated_warning = None;
+            return;
+        }
+        if self.elevated_warning.as_ref().is_some_and(|(p, _)| *p == pid) {
+            return;
+        }
+        if crate::win::process_is_elevated(pid) {
+            let name = crate::win::process_exe_name(pid).unwrap_or_else(|| format!("process {pid}"));
+            let keys: Vec<String> = self.hotkey_report.hook_only.iter().map(|k| crate::hotkeys::display(k)).collect();
+            let text = format!(
+                "{name} runs as administrator, so {} can't reach Snag while it's focused. Restart Snag as administrator (Settings > Hotkeys) or pick a different key.",
+                keys.join(" and ")
+            );
+            log::warn!("{text}");
+            self.note = text.clone();
+            self.elevated_warning = Some((pid, text));
+        } else {
+            self.elevated_warning = None;
         }
     }
 
@@ -522,8 +577,11 @@ impl Controller {
         if old.hotkeys != self.settings.hotkeys {
             self.register_hotkeys();
         }
+        // Which apps/devices are recorded changes live; only turning audio
+        // on/off or its bitrate needs a restart.
+        self.audio_selection.set(self.settings.audio.clone());
         let needs_restart = old.video != self.settings.video
-            || old.audio != self.settings.audio
+            || old.audio.needs_restart(&self.settings.audio)
             || old.buffer_seconds != self.settings.buffer_seconds
             || old.capture.capture_cursor != self.settings.capture.capture_cursor;
         if needs_restart && self.recorder.is_some() {
@@ -569,7 +627,11 @@ impl Controller {
             recording: self.recorder.is_some(),
             note: self.note.clone(),
             last_clip: self.last_clip.clone(),
-            hotkey_notes: self.hotkey_notes.clone(),
+            hotkey_notes: self.hotkey_report.notes.clone(),
+            hotkey_errors: self.hotkey_report.errors.clone(),
+            hotkey_warning: self.elevated_warning.as_ref().map(|(_, t)| t.clone()),
+            hook_only_hotkeys: !self.hotkey_report.hook_only.is_empty(),
+            elevated: self.elevated,
             ..Default::default()
         };
         match &self.recorder {
@@ -583,6 +645,11 @@ impl Controller {
                 s.frames_encoded = ss.stats.frames_encoded.load(Ordering::Relaxed);
                 s.frames_dropped = ss.stats.frames_dropped.load(Ordering::Relaxed);
                 s.audio = ss.audio;
+                if ss.audio {
+                    let cap = crate::audio::mixer::capture_state();
+                    s.audio_sources = cap.sources;
+                    s.audio_note = cap.note;
+                }
                 s.buffered_seconds = ss.buffered_seconds(self.settings.buffer_seconds);
             }
             None => s.state = "Stopped".into(),
@@ -602,6 +669,7 @@ impl Controller {
         };
         if !alive {
             self.ui = None; // the window was closed
+            crate::capture::preview::WANTED.store(false, Ordering::Relaxed);
         }
     }
 

@@ -349,7 +349,9 @@ impl FfmpegHlsEncoder {
                         continue;
                     }
                     // Expected notices about our endless WAV audio stream: not problems.
-                    const BENIGN: [&str; 2] = ["Ignoring maximum wav data size", "Guessed Channel Layout"];
+                    // The last two appear when the audio pipe closes mid-packet at stop.
+                    const BENIGN: [&str; 4] =
+                        ["Ignoring maximum wav data size", "Guessed Channel Layout", "Packet corrupt", "corrupt input packet"];
                     if BENIGN.iter().any(|b| line.contains(b)) {
                         log::debug!("ffmpeg: {line}");
                         continue;

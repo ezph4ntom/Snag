@@ -164,3 +164,123 @@ pub fn set_dpi_awareness() {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
 }
+
+/// True if this process runs as administrator (elevated).
+pub fn is_elevated() -> bool {
+    use windows::Win32::System::Threading::GetCurrentProcess;
+    token_elevated(unsafe { GetCurrentProcess() }).unwrap_or(false)
+}
+
+fn token_elevated(process: windows::Win32::Foundation::HANDLE) -> Option<bool> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation};
+    use windows::Win32::System::Threading::OpenProcessToken;
+    // SAFETY: token handle opened and closed here; out-param sized correctly.
+    unsafe {
+        let mut token = Default::default();
+        OpenProcessToken(process, TOKEN_QUERY, &mut token).ok()?;
+        let mut elevation = TOKEN_ELEVATION::default();
+        let mut len = 0u32;
+        let ok = GetTokenInformation(
+            token,
+            TokenElevation,
+            Some(&mut elevation as *mut _ as *mut _),
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut len,
+        )
+        .is_ok();
+        let _ = CloseHandle(token);
+        ok.then_some(elevation.TokenIsElevated != 0)
+    }
+}
+
+/// Does process `pid` run as administrator? From a normal (non-elevated)
+/// process, an elevated process's token can't be opened at all, which
+/// counts as elevated too.
+pub fn process_is_elevated(pid: u32) -> bool {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    // SAFETY: handle opened and closed here.
+    unsafe {
+        let Ok(h) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else { return false };
+        let elevated = token_elevated(h).unwrap_or(true);
+        let _ = CloseHandle(h);
+        elevated
+    }
+}
+
+/// Full path of a process's executable (None if it can't be opened).
+pub fn process_exe_path(pid: u32) -> Option<std::path::PathBuf> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+    };
+    use windows::core::PWSTR;
+    // SAFETY: handle opened and closed here; buffer length passed in/out.
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut buf = [0u16; 1024];
+        let mut len = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut len).is_ok();
+        let _ = CloseHandle(h);
+        ok.then(|| std::path::PathBuf::from(String::from_utf16_lossy(&buf[..len as usize])))
+    }
+}
+
+/// `game.exe` for a process id.
+pub fn process_exe_name(pid: u32) -> Option<String> {
+    process_exe_path(pid).and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+}
+
+/// Windows build number (e.g. 26100), for the log and feature checks.
+pub fn windows_build() -> u32 {
+    use windows::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW};
+    use windows::core::w;
+    let mut buf = [0u16; 32];
+    let mut len = (buf.len() * 2) as u32;
+    // SAFETY: reading a string value into a sized buffer.
+    let ok = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            w!("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"),
+            w!("CurrentBuildNumber"),
+            RRF_RT_REG_SZ,
+            None,
+            Some(buf.as_mut_ptr() as *mut _),
+            Some(&mut len),
+        )
+    }
+    .is_ok();
+    if !ok {
+        return 0;
+    }
+    let n = (len as usize / 2).saturating_sub(1).min(buf.len());
+    String::from_utf16_lossy(&buf[..n]).trim_matches('\0').parse().unwrap_or(0)
+}
+
+/// The active keyboard layout id, e.g. `00000816` (Portuguese), for the log.
+pub fn keyboard_layout_name() -> String {
+    use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayoutNameW;
+    let mut buf = [0u16; 9];
+    // SAFETY: KL_NAMELENGTH (9) buffer.
+    match unsafe { GetKeyboardLayoutNameW(&mut buf) } {
+        Ok(()) => String::from_utf16_lossy(&buf[..8]),
+        Err(_) => "unknown".into(),
+    }
+}
+
+/// Starts this exe again as administrator (Windows shows its consent
+/// prompt). The new instance takes over from this one (`--replace`).
+pub fn restart_elevated() -> anyhow::Result<()> {
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    use windows::core::{PCWSTR, w};
+    let exe = std::env::current_exe()?;
+    let exe_w = to_wide(&exe.to_string_lossy());
+    // SAFETY: valid NUL-terminated strings.
+    let r = unsafe { ShellExecuteW(None, w!("runas"), PCWSTR(exe_w.as_ptr()), w!("--replace"), PCWSTR::null(), SW_SHOWNORMAL) };
+    if r.0 as isize <= 32 {
+        anyhow::bail!("ShellExecute runas failed (code {})", r.0 as isize);
+    }
+    Ok(())
+}

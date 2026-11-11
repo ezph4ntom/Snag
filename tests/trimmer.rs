@@ -56,6 +56,29 @@ fn fast_and_precise_trims_are_frame_exact() {
     println!("source: {}", original.summary());
     assert_eq!(p.keyframes[..3], [0, 60, 120], "keyframe every second");
 
+    // Preview sound: decoding from frame 60 (1 s into the recording, where a
+    // beep starts) must start right at that beep, and the player must
+    // actually feed the playback device.
+    assert_eq!(p.audio_tracks, 1);
+    {
+        use std::io::Read;
+        let mut child = snag::trimmer::audio::spawn_decoder(&clip, p.audio_seek_time(60)).unwrap();
+        let mut bytes = vec![0u8; 48_000 / 10 * 8];
+        child.stdout.take().unwrap().read_exact(&mut bytes).unwrap();
+        let _ = child.kill();
+        let _ = child.wait();
+        let left: Vec<f32> = bytes.as_chunks::<8>().0.iter().map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
+        let onset = left.iter().position(|v| v.abs() > 0.05).expect("a beep in the first 100 ms");
+        println!("preview audio: beep at {:.1} ms after frame 60", onset as f64 / 48.0);
+        assert!(onset < 48 * 25, "preview sound starts {:.1} ms late", onset as f64 / 48.0);
+        let player = snag::trimmer::audio::AudioPlayer::start(&clip, p.audio_seek_time(0), Instant::now(), 0.0);
+        std::thread::sleep(Duration::from_millis(1500));
+        let played = player.frames_played.load(std::sync::atomic::Ordering::Relaxed);
+        player.stop_and_wait();
+        println!("preview audio: {played} frames sent to the playback device in 1.5 s");
+        assert!(played > 48_000, "preview player fed only {played} frames");
+    }
+
     let (start, end) = (75usize, 200usize);
     for mode in [TrimMode::Precise, TrimMode::Fast] {
         let job = TrimJob { start, end, mode, output: Output::NewFile, encoder: enc.kind };

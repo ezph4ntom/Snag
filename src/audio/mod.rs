@@ -1,7 +1,11 @@
 //! PC audio ("what you hear") for clips.
 //!
-//! * [`loopback::LoopbackSource`] captures the default playback device with
-//!   WASAPI loopback: exactly the mix you hear in your speakers/headset.
+//! * [`mixer::MixSource`] is what recordings use: it captures what the
+//!   user picked in the Sound tab (every playback device, or only some
+//!   apps) and hands all of it to the recorder, which mixes it.
+//! * [`loopback::LoopbackSource`] captures one playback device with WASAPI
+//!   loopback: exactly the mix you hear on it.
+//! * [`process::ProcessLoopbackSource`] captures one app, on any device.
 //! * [`BeepSource`] is a test source: a 10 ms beep at every whole second of
 //!   the recording, used to measure audio/video sync in the tests.
 //!
@@ -9,7 +13,10 @@
 //! performance counter, in 100 ns units). The recorder places packets on
 //! the same clock as the video frames, which is what keeps them in sync.
 
+pub mod devices;
 pub mod loopback;
+pub mod mixer;
+pub mod process;
 
 /// Audio handed to the encoder is always 48 kHz stereo, 32-bit float.
 pub const SAMPLE_RATE: u32 = 48_000;
@@ -20,6 +27,9 @@ pub const CHANNELS: usize = 2;
 pub struct AudioPacket {
     pub qpc_100ns: u64,
     pub samples: Vec<f32>,
+    /// Which source this came from when several are mixed (packets of one
+    /// stream are contiguous; see `mixer::MixBuffer`).
+    pub stream: u32,
 }
 
 pub trait AudioSource: Send {
@@ -82,6 +92,7 @@ impl AudioSource for BeepSource {
         out.push(AudioPacket {
             qpc_100ns: start_100ns + (self.next as i128 * 10_000_000 / rate as i128) as u64,
             samples,
+            stream: 0,
         });
         self.next = until;
     }

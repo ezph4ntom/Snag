@@ -377,6 +377,7 @@ fn pacer_main(
     log::info!("recording at {w}x{h} @ {} fps ({} after first frame wait)", cfg.fps, fmt_ms(warm_start.elapsed()));
 
     let mut tick: u64 = 0;
+    let preview_every = (cfg.fps as u64 / 15).max(1);
     let mut drops_this_window: u64 = 0;
     let mut window_start = Instant::now();
     let result: Result<()> = 'run: loop {
@@ -432,6 +433,10 @@ fn pacer_main(
                 session.stats.frames_unchanged.fetch_add(1, Ordering::Relaxed);
             }
         }
+        // Live preview for the window (~15 fps, only while it's shown).
+        if crate::capture::preview::WANTED.load(Ordering::Relaxed) && tick.is_multiple_of(preview_every) {
+            crate::capture::preview::offer(&last);
+        }
         if frame_tx.send(last.clone()).is_err() {
             break 'run Ok(());
         }
@@ -482,9 +487,10 @@ impl Drop for StopOnDrop {
 ///
 /// Timeline frame `n` (audio frame = one stereo sample pair) is at
 /// `start + n / 48000 s`, exactly like video frame `k` is at `start + k/fps`.
-/// Each captured packet is written at the position its timestamp says;
-/// gaps (nothing playing) become silence. Silence is only filled up to
-/// 50 ms behind real time, so packets that arrive a little late still fit.
+/// Each captured packet is mixed in at the position its timestamp says (all
+/// sources add up; see `audio::mixer::MixBuffer`), and the mix is handed to
+/// the encoder up to 50 ms behind real time, so packets that arrive a little
+/// late still fit. Gaps (nothing playing) are silence.
 fn audio_main(
     mut sink: Box<dyn AudioSink>,
     make_source: AudioSourceFactory,
@@ -492,8 +498,7 @@ fn audio_main(
     stop: &AtomicBool,
     delay_frames: i64,
 ) {
-    const TOLERANCE: i64 = 480; // 10 ms of jitter is treated as contiguous
-    // Fill silence up to 50 ms behind real time. Audio must never trail the
+    // Hand audio over 50 ms behind real time. Audio must never trail the
     // video by ~100 ms or more: ffmpeg would then pause reading video.
     const MARGIN: i64 = 2400;
     // SAFETY: COM must be initialized on every thread that uses WASAPI.
@@ -527,40 +532,33 @@ fn audio_main(
         std::thread::sleep(Duration::from_millis(2));
     };
 
-    let mut written: i64 = preroll;
-    let silence = vec![0.0f32; 4800 * crate::audio::CHANNELS];
-    let write_silence = |sink: &mut Box<dyn AudioSink>, mut frames: i64| -> Result<()> {
-        while frames > 0 {
-            let n = frames.min(4800) as usize;
-            sink.write(&silence[..n * crate::audio::CHANNELS])?;
-            frames -= n as i64;
-        }
-        Ok(())
-    };
+    let mut mix = crate::audio::mixer::MixBuffer::new(preroll);
+    let mut out = Vec::new();
+    let mut late_frames: i64 = 0;
+    let mut last_late_log = Instant::now();
     let result: Result<()> = (|| {
         while !stop.load(Ordering::Relaxed) {
             std::thread::sleep(Duration::from_millis(10));
             let now = qpc_now_100ns();
             source.poll(&mut packets, start, now);
             for p in packets.drain(..) {
-                let frames = (p.samples.len() / crate::audio::CHANNELS) as i64;
                 let pos = frames_from_100ns(p.qpc_100ns as i128 - start as i128) + delay_frames;
-                let mut skip = 0;
-                if pos > written + TOLERANCE {
-                    write_silence(&mut sink, pos - written)?; // quiet gap before this packet
-                    written = pos;
-                } else if pos < written - TOLERANCE {
-                    skip = (written - pos).min(frames); // already covered (overlap)
-                }
-                if skip < frames {
-                    sink.write(&p.samples[skip as usize * crate::audio::CHANNELS..])?;
-                    written += frames - skip;
-                }
+                late_frames += mix.add(p.stream, pos, &p.samples);
+            }
+            if mix.base() < preroll + 48_000 {
+                // The first 0.5 s of capture overlaps the silence preroll by
+                // design; that isn't late audio.
+                late_frames = 0;
             }
             let target = frames_from_100ns(now as i128 - start as i128) + delay_frames - MARGIN;
-            if target > written {
-                write_silence(&mut sink, target - written)?;
-                written = target;
+            if target > mix.base() {
+                mix.take_until(target, &mut out);
+                sink.write(&out)?;
+            }
+            if late_frames > 0 && last_late_log.elapsed() >= Duration::from_secs(10) {
+                log::warn!("audio: {:.0} ms of captured audio arrived too late to use", late_frames as f64 / 48.0);
+                late_frames = 0;
+                last_late_log = Instant::now();
             }
         }
         Ok(())

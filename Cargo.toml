@@ -29,6 +29,9 @@ eframe = { version = "0.37.0", default-features = false, features = ["glow", "de
 # System tray icon + context menu. Default features are Linux-only (gtk), so off.
 tray-icon = { version = "0.26.1", default-features = false }
 raw-window-handle = "0.6"
+# The COM `#[implement]` macro expands to paths in `windows_core`, so it is a
+# direct dependency too (same version the `windows` crate uses).
+windows-core = "0.62.2"
 
 # Microsoft's official Rust projection of the Win32 + WinRT APIs.
 # Each feature flag pulls in one API namespace; only what we use is enabled
@@ -41,21 +44,26 @@ features = [
     "Graphics_Capture",
     "Graphics_DirectX",
     "Graphics_DirectX_Direct3D11",
+    "Win32_Devices_FunctionDiscovery",
     "Win32_Foundation",
     "Win32_Graphics_Direct3D",
     "Win32_Graphics_Direct3D11",
     "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dwm",
     "Win32_Graphics_Dxgi_Common",
     "Win32_Graphics_Gdi",
     "Win32_Media",
     "Win32_Media_Audio",
+    "Win32_Media_Audio_Endpoints",
     "Win32_Security",
     "Win32_Storage_FileSystem",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
     "Win32_System_Diagnostics_Debug",
+    "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_IO",
     "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
     "Win32_System_Performance",
     "Win32_System_Pipes",
     "Win32_System_Registry",
@@ -66,10 +74,12 @@ features = [
     "Win32_System_WinRT_Direct3D11",
     "Win32_System_WinRT_Graphics_Capture",
     "Win32_UI_Accessibility",
+    "Win32_UI_Controls",
     "Win32_UI_HiDpi",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
     "Win32_UI_Shell_Common",
+    "Win32_UI_Shell_PropertiesSystem",
     "Win32_UI_WindowsAndMessaging",
 ]
 

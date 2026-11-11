@@ -3,12 +3,17 @@
 A lightweight game-clipping app for Windows 10/11, written in Rust.
 (Called ClipApp before v0.3; settings carry over automatically.)
 
-* **Replay buffer**: always keeps the last N seconds (default 30) of video
-  **and PC audio**. Press **Ctrl+F10** and they're saved as an MP4 without
-  interrupting recording.
+* **Replay buffer**: always keeps the last N seconds (default 30) of video,
+  **PC audio and your microphone**. Press **Ctrl+F10** and they're saved as
+  an MP4 without interrupting recording.
+* **Sound mixer**: record the whole PC (every output device, e.g. a
+  headset's separate "Game" and "Chat" devices) or only the apps you tick
+  (Spotify, the game, Discord...), each with its own volume and live meter.
+* **Live preview** of what's being recorded.
 * **Screenshots**: **Ctrl+F11** saves a PNG of the monitor being captured.
 * **Any key as a hotkey**: F-keys, letters, Print Screen, F12, a lone Right
-  Ctrl, with or without modifiers, even keys another program already uses.
+  Ctrl, the middle/side mouse buttons, with or without modifiers, even keys
+  another program already uses. Problems are shown in Settings and logged.
 * **Follows your focus**: captures whichever monitor holds the active
   window, and switches when you Alt-Tab to another monitor (or capture a fixed monitor instead).
 * **Hardware encoding**: NVIDIA NVENC, AMD AMF, Intel Quick Sync, with x264 as fallback.
@@ -17,7 +22,11 @@ A lightweight game-clipping app for Windows 10/11, written in Rust.
 * **Auto-tuned quality**: detects your GPU/encoders/CPU/RAM/monitors and
   picks Quality/Balanced/Performance, and explains why.
 * **Themes**: JSON files, hot-reloaded. Snag Dark (Ember), Tide, Dusk,
-  Light, OLED (pure black) and Synthwave included.
+  Light, OLED (pure black) and Synthwave included. Snag draws its own title
+  bar in the theme (Windows snap, edge resizing and double-click maximize
+  still work).
+* **Your layout**: drag the tab bar to any window edge, show tabs as icons
+  only, and set the UI size with − / + in Settings → Window.
 
 Measured on the development PC (RTX 3070 Ti, 20 threads, 1080p @ 144 Hz),
 recording 1080p60 NVENC + PC audio: **~1.8 % total CPU and ~95 MB private
@@ -148,22 +157,37 @@ average save time 0.65 s. Trims: frame-exact in both modes, audio kept in sync.
 | Screenshot | **Ctrl+F11** (tray: *Take screenshot*) |
 | Open the window | left-click the tray icon, or run `snag.exe` again |
 | Start/stop the buffer | tray menu, or the status bar button |
-| Rebind hotkeys | Settings tab: click the hotkey, press the new key (Esc cancels) |
+| Rebind hotkeys | Settings tab: click the hotkey, press the new key or mouse button (Esc cancels) |
+| Pick what's recorded | Sound tab |
+| Open a tab directly | `snag.exe --tab live\|sound\|settings\|quality\|appearance` while Snag runs |
 
 **Hotkeys** can be *any* key, with or without Ctrl/Alt/Shift/Win, including
-keys Windows or another program use. Snag takes them over:
-* Windows' own hotkey registration is used when Windows allows it.
-* Otherwise (key taken by another program, reserved like Print Screen, or a
-  lone modifier like Right Ctrl), a keyboard hook catches the key first.
-  Limitation: hook-caught keys don't fire while a program running *as
-  administrator* is focused (run Snag as administrator too if you need that).
+keys Windows or another program use, and the middle/side mouse buttons:
+* A keyboard hook catches every hotkey first and swallows it, so Snag wins
+  over other programs and over games that turn off normal app hotkeys.
+* Windows' own hotkey registration is added when Windows allows it; it also
+  works while a program running *as administrator* is focused, where the
+  hook can't see keys. A hotkey only the hook can catch shows a note in
+  Settings, a warning when an administrator program takes focus, and a
+  **Restart Snag as administrator** button.
+* AltGr keyboards (Portuguese, German...) work: a lone Right Alt is Right Alt.
+  Punctuation keys show their name on your layout (e.g. `Ctrl+Ç`).
 * A plain key (e.g. `F9` or `P`) stops reaching games and other apps while
-  Snag runs; a lone modifier (e.g. Right Ctrl) keeps working normally.
+  Snag runs; a lone modifier (e.g. Right Ctrl) and mouse buttons keep
+  working normally.
 * Picking the other action's key swaps the two hotkeys.
+* Everything is logged in `%LOCALAPPDATA%\Snag\logs\core.log` (keyboard
+  layout, whether Snag is elevated, how each hotkey was set up, each press).
 
-**PC audio**: everything you hear (the default playback device) is recorded
-as 160 kbps AAC. Switching outputs (speakers to headset) is followed
-automatically. Toggle it and pick the quality in Settings → Audio.
+**Sound** (Sound tab), recorded as one AAC track (160 kbps by default):
+* **Whole PC audio**: every playback device is captured and mixed, so apps
+  on different outputs (game on "Game", Discord on "Chat") are all in the
+  clip. Untick a device or lower its volume in its strip.
+* **Only ticked apps**: per-app capture (Windows 10 2004 or newer), on any
+  device. Apps playing sound appear as strips with a live meter; ticks are
+  remembered by app and applied immediately (the buffer keeps running).
+  On older Windows, the devices those apps play on are captured instead.
+* **Microphone**: on by default; pick the device and volume in its strip.
 
 Clips go to `Videos\Snag`, screenshots to `Pictures\Snag` (both
 configurable). After a clip is saved, a sound plays and the clip is loaded
@@ -360,7 +384,7 @@ ffmpeg details that matter (all measured; see comments in `src/encode/ffmpeg.rs`
 * **A hotkey doesn't fire in one game**: that game probably runs as
   administrator (see limitation 2). Pick a key Windows can register (with
   Ctrl/Alt/Shift), or run Snag as administrator.
-* **No sound in clips**: check Settings → Audio, and that the game plays
-  through the *default* playback device.
+* **No sound in clips**: open the Sound tab. "Recording now" lists what
+  is captured; in "only ticked apps" mode, tick the game/app.
 * **Black clips**: see limitation 6. Try borderless-windowed mode in the game.
 * **Dropped frames in the log**: lower the preset in the Quality tab (Balanced or Performance).

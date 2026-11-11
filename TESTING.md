@@ -41,6 +41,11 @@ key or combination (Esc cancels).
 - [ ] With two monitors: Alt-Tab to the other monitor, then save a clip (capture should follow you)
 - [ ] The trimmer: drag the handles, step frames with the arrow keys, save in *Fast* and *Precise* mode
 - [ ] Rebinding a hotkey to an unusual key (a mouse-less key like Print Screen, F12, or Right Ctrl)
+- [ ] A mouse side button (Mouse4/Mouse5) as a hotkey
+- [ ] Clips include your voice (microphone) and Discord, even if Discord uses a different output device
+- [ ] Sound tab: untick "Whole PC audio", tick only some apps, and check the next clip has only those
+- [ ] Trimmer: pressing Play also plays the clip's sound
+- [ ] Window: drag the tab bar to another edge; maximize/snap/resize the window
 - [ ] Does your game's FPS drop noticeably while Snag runs? (Try the Performance preset in the Quality tab if so.)
 - [ ] Switching themes in the Appearance tab
 

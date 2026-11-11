@@ -24,14 +24,27 @@ pub struct CoreStatus {
     pub buffered_seconds: f64,
     pub last_clip: Option<PathBuf>,
     pub audio: bool,
+    /// What the audio track is recorded from right now (device/app names).
+    pub audio_sources: Vec<String>,
+    pub audio_note: Option<String>,
     /// Notes about the hotkeys, e.g. "intercepted with a keyboard hook".
     pub hotkey_notes: Vec<String>,
+    /// Hotkeys that can't work at all, and why.
+    pub hotkey_errors: Vec<String>,
+    /// A hotkey can't work right now (e.g. an administrator program is
+    /// focused).
+    pub hotkey_warning: Option<String>,
+    /// Some hotkey only works through the keyboard hook.
+    pub hook_only_hotkeys: bool,
+    /// Snag runs as administrator.
+    pub elevated: bool,
     /// Latest notable event ("Saved Clip_... (31 s)", errors).
     pub note: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
+#[allow(clippy::large_enum_variant)] // one message a second; boxing buys nothing
 pub enum CoreToUi {
     Status(CoreStatus),
     /// Switch to a tab (and load a clip into the trimmer). `activate`:
@@ -58,6 +71,20 @@ pub enum UiToCore {
     /// core does this with a keyboard hook, so any key can be captured.
     CaptureHotkey { target: String },
     CancelHotkeyCapture,
+    /// Restart the core as administrator (so hotkeys also work while
+    /// programs running as administrator are focused).
+    RestartAsAdmin,
+    /// Start/stop sending live preview frames (Live tab shown or not).
+    Preview { on: bool },
+}
+
+/// How hotkey registration went, for the Settings tab and the log.
+#[derive(Clone, Debug, Default)]
+pub struct HotkeyReport {
+    pub notes: Vec<String>,
+    pub errors: Vec<String>,
+    /// Hotkeys Windows wouldn't register (they rely on the keyboard hook).
+    pub hook_only: Vec<String>,
 }
 
 pub fn encode<T: Serialize>(msg: &T) -> String {

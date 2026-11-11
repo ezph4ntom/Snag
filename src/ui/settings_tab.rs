@@ -1,11 +1,12 @@
-//! Settings tab: buffer length, hotkeys, capture mode, audio, folders, sound.
+//! Settings tab: buffer length, hotkeys, capture mode, folders, clip sound,
+//! window (UI size, tab bar). Audio sources live in the Sound tab.
 
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 
 use eframe::egui::{self, RichText};
 
-use super::{Shared, dim, section};
+use super::{Shared, section};
 use crate::app::ipc::UiToCore;
 use crate::config::{AfterClip, CaptureMode};
 use crate::hotkeys::Hotkey;
@@ -76,11 +77,10 @@ impl SettingsTab {
             self.buffer_section(ui, shared);
             self.hotkey_section(ui, shared);
             self.capture_section(ui, shared);
-            self.audio_section(ui, shared);
             self.folder_section(ui, shared);
             self.sound_section(ui, shared);
             self.after_clip_section(ui, shared);
-            ui.label(dim(shared, format!("Settings file: {}", crate::paths::settings_file().display())));
+            self.window_section(ui, shared);
         });
     }
 
@@ -105,7 +105,12 @@ impl SettingsTab {
     }
 
     fn hotkey_section(&mut self, ui: &mut egui::Ui, shared: &mut Shared) {
-        let notes = shared.status.as_ref().map(|s| s.hotkey_notes.clone()).unwrap_or_default();
+        let status = shared.status.clone().unwrap_or_default();
+        let notes = status.hotkey_notes.clone();
+        let errors = status.hotkey_errors.clone();
+        let warning = status.hotkey_warning.clone();
+        let offer_admin = shared.connected && status.hook_only_hotkeys && !status.elevated;
+        let mut restart_admin = false;
         let clip = shared.settings.hotkeys.clip.clone();
         let shot = shared.settings.hotkeys.screenshot.clone();
         let (error_color, warn_color) = (shared.theme.colors.error.0, shared.theme.colors.warning.0);
@@ -119,7 +124,11 @@ impl SettingsTab {
                 for (which, label, value) in [(Which::Clip, "Save clip", &clip), (Which::Screenshot, "Screenshot", &shot)] {
                     ui.label(label);
                     let waiting = capturing == Some(which);
-                    let text = if waiting { "Press any key or combination... (Esc cancels)".to_string() } else { value.clone() };
+                    let text = if waiting {
+                        "Press a key, combination or mouse button... (Esc cancels)".to_string()
+                    } else {
+                        crate::hotkeys::display(value)
+                    };
                     if ui.add(egui::Button::new(RichText::new(text).monospace()).min_size([300.0, 0.0].into())).clicked() && !waiting {
                         start_capture = Some(which);
                     }
@@ -131,22 +140,37 @@ impl SettingsTab {
             });
             ui.label(
                 RichText::new(
-                    "Click a hotkey, then press any key: F-keys, letters, Print Screen, a lone Right Ctrl, \
-                     with or without Ctrl/Alt/Shift/Win. Snag takes the key over even if Windows or \
-                     another program uses it. Picking the other action's key swaps the two.",
+                    "Click a hotkey, then press any key (with or without Ctrl/Alt/Shift/Win), a lone \
+                     Right Ctrl, or the middle/side mouse buttons. Snag takes the key over even if Windows \
+                     or another program uses it. Picking the other action's key swaps the two.",
                 )
                 .small(),
             );
+            for e in &errors {
+                ui.label(RichText::new(e).color(error_color));
+            }
+            if let Some(w) = &warning {
+                ui.label(RichText::new(w).color(warn_color));
+            }
             if let Some(n) = &capture_note {
                 ui.label(RichText::new(n).color(warn_color).small());
             }
             for n in &notes {
                 ui.label(RichText::new(n).small());
             }
+            if offer_admin {
+                ui.horizontal(|ui| {
+                    restart_admin = ui.button("Restart Snag as administrator").clicked();
+                    ui.label(RichText::new("Then the hotkeys also work in games running as administrator.").small());
+                });
+            }
             if let Some(e) = &capture_error {
                 ui.label(RichText::new(e).color(error_color));
             }
         });
+        if restart_admin {
+            shared.outbox.push(UiToCore::RestartAsAdmin);
+        }
         if let Some(w) = start_capture {
             // A capture already running for the other hotkey is replaced.
             if self.capturing_via_core {
@@ -171,7 +195,8 @@ impl SettingsTab {
     /// Applies a newly picked hotkey. If it's the other action's hotkey, the
     /// two swap (so neither ends up without a key).
     fn apply_hotkey(&mut self, which: Which, hk: Hotkey, shared: &mut Shared) {
-        let text = hk.to_string();
+        let stored = hk.to_string();
+        let text = crate::hotkeys::display(&stored);
         let keys = &mut shared.settings.hotkeys;
         let (mine, other) = match which {
             Which::Clip => (&mut keys.clip, &mut keys.screenshot),
@@ -185,7 +210,7 @@ impl SettingsTab {
         } else if hk.is_modifier_only() {
             self.capture_note = Some(format!("{text} keeps working normally too; pressing it alone triggers Snag."));
         }
-        *mine = text;
+        *mine = stored;
         shared.mark_dirty();
     }
 
@@ -226,32 +251,41 @@ impl SettingsTab {
         }
     }
 
-    fn audio_section(&mut self, ui: &mut egui::Ui, shared: &mut Shared) {
-        let mut a = shared.settings.audio.clone();
-        section(ui, shared, "Audio", |ui| {
-            ui.checkbox(&mut a.record_pc_audio, "Record PC audio (everything you hear: game, voice chat, music)");
-            ui.add_enabled_ui(a.record_pc_audio, |ui| {
+    fn window_section(&mut self, ui: &mut egui::Ui, shared: &mut Shared) {
+        use crate::config::{TabDock, UiSettings};
+        let mut u = shared.settings.ui.clone();
+        section(ui, shared, "Window", |ui| {
+            egui::Grid::new("window").num_columns(2).spacing([16.0, 8.0]).show(ui, |ui| {
+                ui.label("UI size");
                 ui.horizontal(|ui| {
-                    ui.label("Quality");
-                    egui::ComboBox::from_id_salt("audio_kbps")
-                        .selected_text(format!("{} kbps AAC", a.bitrate_kbps))
-                        .show_ui(ui, |ui| {
-                            for k in [128, 160, 192, 256, 320] {
-                                ui.selectable_value(&mut a.bitrate_kbps, k, format!("{k} kbps AAC"));
-                            }
-                        });
+                    if ui.add_enabled(u.scale > UiSettings::MIN_SCALE + 0.01, egui::Button::new(" − ")).clicked() {
+                        u.scale -= 0.1;
+                    }
+                    ui.label(RichText::new(format!("{:.0} %", u.scale * 100.0)).monospace());
+                    if ui.add_enabled(u.scale < UiSettings::MAX_SCALE - 0.01, egui::Button::new(" + ")).clicked() {
+                        u.scale += 0.1;
+                    }
+                    if (u.scale - 1.0).abs() > 0.01 && ui.small_button("Reset").clicked() {
+                        u.scale = 1.0;
+                    }
                 });
+                ui.end_row();
+                ui.label("Tab bar");
+                ui.horizontal(|ui| {
+                    for (d, name) in [(TabDock::Top, "Top"), (TabDock::Left, "Left"), (TabDock::Right, "Right"), (TabDock::Bottom, "Bottom")] {
+                        ui.radio_value(&mut u.tab_dock, d, name);
+                    }
+                });
+                ui.end_row();
+                ui.label("");
+                ui.checkbox(&mut u.icon_tabs, "Icons only (names show on hover)");
+                ui.end_row();
             });
-            ui.label(
-                RichText::new(
-                    "Records the default playback device and follows it if you switch (speakers to headset). \
-                     Changing this restarts the replay buffer.",
-                )
-                .small(),
-            );
+            ui.label(RichText::new("Tip: drag the tab bar's grip to any edge of the window.").small());
         });
-        if a != shared.settings.audio {
-            shared.settings.audio = a;
+        u.scale = (u.scale.clamp(UiSettings::MIN_SCALE, UiSettings::MAX_SCALE) * 10.0).round() / 10.0;
+        if u != shared.settings.ui {
+            shared.settings.ui = u;
             shared.mark_dirty();
         }
     }

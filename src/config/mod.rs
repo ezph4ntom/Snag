@@ -28,6 +28,8 @@ pub struct Settings {
     pub trimmer: TrimmerSettings,
     /// Theme id = file name in `themes/` without `.json`.
     pub theme: String,
+    /// Window layout: size, tab bar position and style.
+    pub ui: UiSettings,
     /// Hardware detected on first launch (cached so startup stays fast).
     pub hardware: Option<HardwareInfo>,
 }
@@ -46,9 +48,40 @@ impl Default for Settings {
             sound: SoundSettings::default(),
             trimmer: TrimmerSettings::default(),
             theme: "dark".into(),
+            ui: UiSettings::default(),
             hardware: None,
         }
     }
+}
+
+/// Which window edge the tab bar sits on.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum TabDock {
+    Top,
+    Left,
+    Right,
+    Bottom,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct UiSettings {
+    /// UI size: 1.0 = 100 %.
+    pub scale: f32,
+    pub tab_dock: TabDock,
+    /// Show tabs as icons only (names in tooltips).
+    pub icon_tabs: bool,
+}
+
+impl Default for UiSettings {
+    fn default() -> Self {
+        Self { scale: 1.0, tab_dock: TabDock::Top, icon_tabs: false }
+    }
+}
+
+impl UiSettings {
+    pub const MIN_SCALE: f32 = 0.7;
+    pub const MAX_SCALE: f32 = 2.0;
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -129,10 +162,25 @@ impl Default for VideoSettings {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct AudioSettings {
-    /// Record what you hear (the default playback device) into clips.
+    /// Record PC audio into clips at all.
     pub record_pc_audio: bool,
     /// AAC bitrate. 160 kbps stereo is transparent for game audio.
     pub bitrate_kbps: u32,
+    /// true: everything on every playback device. false: only the apps
+    /// ticked in `apps`.
+    pub whole_pc: bool,
+    /// Apps the user ticked or unticked (remembered by exe name, so a
+    /// restarted game is picked up again).
+    pub apps: Vec<AudioAppChoice>,
+    /// Per-device choices for "Whole PC audio" (devices not listed are
+    /// included at full volume).
+    pub devices: Vec<AudioDeviceChoice>,
+    /// Record your microphone (your voice) into clips too.
+    pub record_mic: bool,
+    /// Microphone endpoint id; empty = Windows' default microphone.
+    pub mic_device: String,
+    /// 0..=1
+    pub mic_volume: f32,
 }
 
 impl Default for AudioSettings {
@@ -140,7 +188,56 @@ impl Default for AudioSettings {
         Self {
             record_pc_audio: true,
             bitrate_kbps: 160,
+            whole_pc: true,
+            apps: Vec::new(),
+            devices: Vec::new(),
+            record_mic: true,
+            mic_device: String::new(),
+            mic_volume: 1.0,
         }
+    }
+}
+
+impl AudioSettings {
+    /// Changes that need the replay buffer restarted (the rest is applied
+    /// live, without losing what's buffered).
+    pub fn needs_restart(&self, other: &AudioSettings) -> bool {
+        self.record_pc_audio != other.record_pc_audio || self.bitrate_kbps != other.bitrate_kbps
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct AudioAppChoice {
+    /// Lower-case exe file name, e.g. "spotify.exe".
+    pub exe: String,
+    /// Display name, e.g. "Spotify".
+    pub name: String,
+    pub include: bool,
+    /// 0..=1
+    pub volume: f32,
+}
+
+impl Default for AudioAppChoice {
+    fn default() -> Self {
+        Self { exe: String::new(), name: String::new(), include: true, volume: 1.0 }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct AudioDeviceChoice {
+    /// Windows' endpoint id.
+    pub id: String,
+    pub name: String,
+    pub include: bool,
+    /// 0..=1
+    pub volume: f32,
+}
+
+impl Default for AudioDeviceChoice {
+    fn default() -> Self {
+        Self { id: String::new(), name: String::new(), include: true, volume: 1.0 }
     }
 }
 
@@ -179,6 +276,8 @@ pub struct TrimmerSettings {
     pub after_clip: AfterClip,
     /// Default export mode: false = fast (keyframe remux), true = precise.
     pub precise_by_default: bool,
+    /// Volume of the preview's sound, 0..=1.
+    pub preview_volume: f32,
 }
 
 impl Default for TrimmerSettings {
@@ -186,6 +285,7 @@ impl Default for TrimmerSettings {
         Self {
             after_clip: AfterClip::OpenTrimmerMinimized,
             precise_by_default: false,
+            preview_volume: 1.0,
         }
     }
 }
@@ -200,7 +300,17 @@ impl Settings {
             self.video.output_height = self.video.output_height.clamp(240, 4320) & !1;
         }
         self.sound.volume = self.sound.volume.clamp(0.0, 1.0);
+        self.trimmer.preview_volume = self.trimmer.preview_volume.clamp(0.0, 1.0);
         self.audio.bitrate_kbps = self.audio.bitrate_kbps.clamp(64, 320);
+        for a in &mut self.audio.apps {
+            a.volume = a.volume.clamp(0.0, 1.0);
+            a.exe = a.exe.to_ascii_lowercase();
+        }
+        self.audio.mic_volume = self.audio.mic_volume.clamp(0.0, 1.0);
+        self.ui.scale = (self.ui.scale.clamp(UiSettings::MIN_SCALE, UiSettings::MAX_SCALE) * 10.0).round() / 10.0;
+        for d in &mut self.audio.devices {
+            d.volume = d.volume.clamp(0.0, 1.0);
+        }
     }
 
     /// Loads settings. Returns `(settings, first_launch)`.

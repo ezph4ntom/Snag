@@ -78,7 +78,7 @@ impl QualityTab {
                         if works {
                             ui.label(RichText::new(k.label()).color(ok));
                         } else {
-                            ui.label(RichText::new(format!("{} (not found)", k.label())).color(off).strikethrough());
+                            ui.label(RichText::new(k.label()).color(off).strikethrough()).on_hover_text("Not available on this PC");
                         }
                     }
                 });
@@ -96,7 +96,7 @@ impl QualityTab {
                 );
                 ui.end_row();
             });
-            ui.label(dim(shared, format!("{}  ·  detected {}", hw.ffmpeg, hw.detected_at)).small());
+            ui.label(dim(shared, format!("Detected {}", hw.detected_at)).small());
             self.detect_button(ui);
         });
     }
@@ -113,9 +113,6 @@ impl QualityTab {
                     chosen = Some(rec.preset);
                 }
             });
-            for w in &rec.why {
-                ui.label(dim(shared, format!("Why: {w}")));
-            }
             ui.add_space(6.0);
             ui.columns(3, |cols| {
                 for (col, p) in cols.iter_mut().zip(Preset::AUTO) {
@@ -143,14 +140,12 @@ impl QualityTab {
                 }
             });
             ui.add_space(6.0);
-            if current == Preset::Custom {
-                ui.label(dim(shared, "Custom: you changed settings by hand (see below)."));
+            let hint = if current == Preset::Custom {
+                "Custom: changed by hand below.".to_string()
             } else {
-                ui.label(RichText::new(format!("Why these {} settings:", current.label())).strong());
-                for line in tune::plan(hw, current).why {
-                    ui.label(dim(shared, format!("• {line}")));
-                }
-            }
+                rec.why.first().cloned().unwrap_or_default()
+            };
+            ui.label(dim(shared, hint).small()).on_hover_text(rec.why.join("\n"));
         });
         if let Some(p) = chosen {
             tune::plan(hw, p).apply_to(&mut shared.settings.video);
@@ -200,18 +195,20 @@ impl QualityTab {
                 ui.end_row();
 
                 ui.label("Bitrate");
-                let mut mbps = v.bitrate_kbps as f32 / 1000.0;
-                if ui.add(egui::Slider::new(&mut mbps, 2.0..=80.0).step_by(0.5).suffix(" Mbps")).changed() {
-                    v.bitrate_kbps = (mbps * 1000.0) as u32;
-                }
+                ui.horizontal(|ui| {
+                    let mut mbps = v.bitrate_kbps as f32 / 1000.0;
+                    if ui.add(egui::Slider::new(&mut mbps, 2.0..=80.0).step_by(0.5).suffix(" Mbps")).changed() {
+                        v.bitrate_kbps = (mbps * 1000.0) as u32;
+                    }
+                    let mb_per_30s = v.bitrate_kbps as f64 * 30.0 / 8.0 / 1000.0;
+                    ui.label(dim(shared, format!("≈ {mb_per_30s:.0} MB / 30 s")).small());
+                });
                 ui.end_row();
             });
-            let mb_per_30s = v.bitrate_kbps as f64 * 30.0 / 8.0 / 1000.0;
-            ui.label(dim(shared, format!("About {mb_per_30s:.0} MB per 30 s of video.")));
             if !v.encoder.is_hardware() && v.fps > 30 {
-                ui.label(RichText::new("x264 above 30 fps can cost a lot of CPU while gaming.").color(shared.theme.colors.warning.0));
+                ui.label(RichText::new("x264 above 30 fps is heavy on the CPU.").color(shared.theme.colors.warning.0));
             }
-            ui.label(dim(shared, "Changing video settings restarts the replay buffer (the current buffer is discarded)."));
+            ui.label(dim(shared, "Changes restart the replay buffer.").small());
         });
         let mut old = shared.settings.video.clone();
         old.preset = v.preset;

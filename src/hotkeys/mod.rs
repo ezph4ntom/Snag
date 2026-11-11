@@ -60,7 +60,9 @@ const NAMED_KEYS: &[(&str, u32)] = &[
     ("Minus", 0xBD), ("Equals", 0xBB), ("Comma", 0xBC), ("Period", 0xBE),
     ("Semicolon", 0xBA), ("Slash", 0xBF), ("Backtick", 0xC0),
     ("LeftBracket", 0xDB), ("Backslash", 0xDC), ("RightBracket", 0xDD), ("Quote", 0xDE),
-    ("IntlBackslash", 0xE2),
+    ("IntlBackslash", 0xE2), ("AbntC1", 0xC1), ("AbntC2", 0xC2),
+    // Mouse buttons (left/right clicks can't be hotkeys: you'd lose the mouse).
+    ("MouseMiddle", 0x04), ("Mouse4", 0x05), ("Mouse5", 0x06),
     ("VolumeMute", 0xAD), ("VolumeDown", 0xAE), ("VolumeUp", 0xAF),
     ("MediaNext", 0xB0), ("MediaPrevious", 0xB1), ("MediaStop", 0xB2), ("MediaPlayPause", 0xB3),
     ("BrowserBack", 0xA6), ("BrowserForward", 0xA7), ("BrowserRefresh", 0xA8), ("BrowserStop", 0xA9),
@@ -75,6 +77,49 @@ const NAMED_KEYS: &[(&str, u32)] = &[
 /// True for Shift/Ctrl/Alt/Win in any of their generic or left/right forms.
 pub fn is_modifier_vk(vk: u32) -> bool {
     matches!(vk, 0x10 | 0x11 | 0x12 | 0xA0..=0xA5 | 0x5B | 0x5C)
+}
+
+/// Middle, back (Mouse4) and forward (Mouse5) mouse buttons. These are
+/// watched with raw input, since Windows' hotkey system is keyboard-only.
+pub fn is_mouse_vk(vk: u32) -> bool {
+    matches!(vk, 0x04..=0x06)
+}
+
+/// The OEM punctuation keys move around between keyboard layouts (the key
+/// right of L is ";" in US English but "ç" in Portuguese). Their stored
+/// names follow the US key, so ask Windows what the key is called on the
+/// current layout for display.
+fn layout_key_label(vk: u32) -> Option<String> {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyNameTextW, MAP_VIRTUAL_KEY_TYPE, MapVirtualKeyW};
+    if !matches!(vk, 0xBA..=0xC2 | 0xDB..=0xDF | 0xE2) {
+        return None;
+    }
+    // SAFETY: plain lookups into the current keyboard layout.
+    unsafe {
+        let scan = MapVirtualKeyW(vk, MAP_VIRTUAL_KEY_TYPE(0)); // MAPVK_VK_TO_VSC
+        if scan == 0 {
+            return None;
+        }
+        let mut buf = [0u16; 32];
+        let n = GetKeyNameTextW((scan << 16) as i32, &mut buf);
+        let label = String::from_utf16_lossy(&buf[..n.max(0) as usize]).trim().to_string();
+        (!label.is_empty()).then(|| label.to_uppercase())
+    }
+}
+
+/// A hotkey as shown to the user: `"Ctrl+Semicolon"` is shown as
+/// `"Ctrl+Ç"` on a Portuguese keyboard. Unparsable text is returned as is.
+pub fn display(text: &str) -> String {
+    let Ok(hk) = Hotkey::parse(text) else { return text.to_string() };
+    match layout_key_label(hk.vk) {
+        Some(label) => {
+            let mut s = hk.to_string();
+            let name = key_name(hk.vk);
+            s.truncate(s.len() - name.len());
+            s + &label
+        }
+        None => hk.to_string(),
+    }
 }
 
 fn key_from_name(name: &str) -> Option<u32> {
@@ -234,11 +279,20 @@ impl fmt::Display for Hotkey {
 pub fn register(hwnd: HWND, id: i32, hk: &Hotkey) -> Result<()> {
     unregister(hwnd, id);
     if hk.is_modifier_only() {
-        bail!("{hk} is a modifier key on its own");
+        bail!("Windows can't register a modifier key on its own");
+    }
+    if is_mouse_vk(hk.vk) {
+        bail!("Windows hotkeys are keyboard-only");
     }
     // SAFETY: plain Win32 call.
-    unsafe { RegisterHotKey(Some(hwnd), id, hk.modifiers(), hk.vk) }
-        .map_err(|_| anyhow!("{hk} is taken by another program or reserved by Windows"))
+    unsafe { RegisterHotKey(Some(hwnd), id, hk.modifiers(), hk.vk) }.map_err(|e| {
+        // 1409 = ERROR_HOTKEY_ALREADY_REGISTERED
+        if e.code().0 as u32 & 0xFFFF == 1409 {
+            anyhow!("another program already registered {hk}")
+        } else {
+            anyhow!("Windows refused {hk} ({})", e.message())
+        }
+    })
 }
 
 pub fn unregister(hwnd: HWND, id: i32) {
@@ -256,7 +310,8 @@ mod tests {
     fn round_trips() {
         for s in [
             "Ctrl+F10", "Ctrl+Alt+Shift+S", "Alt+Num5", "Win+PrintScreen", "Ctrl+Backtick", "F12", "PrintScreen",
-            "A", "RightCtrl", "LeftAlt", "MediaPlayPause", "Shift+VK0xE8", "F24",
+            "A", "RightCtrl", "LeftAlt", "MediaPlayPause", "Shift+VK0xE8", "F24", "Mouse4", "Ctrl+MouseMiddle",
+            "AbntC1",
         ] {
             assert_eq!(Hotkey::parse(s).unwrap().to_string(), s);
         }
