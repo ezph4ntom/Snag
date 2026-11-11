@@ -1,0 +1,4 @@
+/target
+/dist
+# Bundled ffmpeg sidecar (copied by scripts\bundle-ffmpeg.ps1; ~200 MB)
+/bin

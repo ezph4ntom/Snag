@@ -1,0 +1,25 @@
+{
+  "name": "Dark",
+  "dark": true,
+  "colors": {
+    "background": "#1b1d22",
+    "panel": "#23262d",
+    "text": "#e4e6eb",
+    "text_dim": "#9aa0ab",
+    "accent": "#4f8cff",
+    "accent_text": "#ffffff",
+    "widget": "#31353e",
+    "widget_hover": "#3b404b",
+    "widget_active": "#464c59",
+    "border": "#3a3f4a",
+    "success": "#3fc67f",
+    "warning": "#f0a52a",
+    "error": "#ef5350",
+    "timeline": "#2c3038",
+    "timeline_selection": "#4f8cff55",
+    "playhead": "#ffffff"
+  },
+  "fonts": { "body": 14.0, "heading": 20.0, "button": 14.0, "small": 11.5, "mono": 13.0, "family": null },
+  "corner_radius": 6.0,
+  "spacing": { "item": [8.0, 6.0], "button_padding": [10.0, 5.0], "window_margin": 12.0, "indent": 18.0 }
+}

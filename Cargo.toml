@@ -1,0 +1,86 @@
+[package]
+name = "clipapp"
+version = "0.2.0"
+edition = "2024"
+description = "Lightweight game-clipping app for Windows (replay buffer, screenshots, trimmer)"
+
+# The crate is split into a library (src/lib.rs, all the real code) and a thin
+# binary (src/main.rs). Integration tests in tests/ link against the library,
+# which is how the 50-clip reliability test drives the real pipeline.
+[lib]
+name = "clipapp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "clipapp"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.104"          # ergonomic error type for application code
+log = "0.4.35"              # logging facade (our own tiny file logger implements it)
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"      # settings + themes are JSON
+png = "0.18.1"              # screenshot encoding
+hound = "3.5.1"             # WAV reading/writing for the clip sound volume control
+
+# egui via eframe, OpenGL ("glow") backend: smallest/lightest renderer option.
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts", "accesskit"] }
+
+# System tray icon + context menu. Default features are Linux-only (gtk), so off.
+tray-icon = { version = "0.26.1", default-features = false }
+raw-window-handle = "0.6"
+
+# Microsoft's official Rust projection of the Win32 + WinRT APIs.
+# Each feature flag pulls in one API namespace; only what we use is enabled
+# to keep compile times reasonable.
+[dependencies.windows]
+version = "0.62.2"
+features = [
+    "Foundation",
+    "Graphics",
+    "Graphics_Capture",
+    "Graphics_DirectX",
+    "Graphics_DirectX_Direct3D11",
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
+    "Win32_Media",
+    "Win32_Media_Audio",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_IO",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Performance",
+    "Win32_System_Pipes",
+    "Win32_System_Registry",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
+    "Win32_System_WinRT",
+    "Win32_System_WinRT_Direct3D11",
+    "Win32_System_WinRT_Graphics_Capture",
+    "Win32_UI_Accessibility",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_WindowsAndMessaging",
+]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+strip = "symbols"
+panic = "unwind"   # keep unwinding so a panicking worker thread can be logged and restarted
+
+# Debug builds: optimize dependencies a bit so the UI/capture aren't sluggish
+# while developing, but keep our own crate fast to compile.
+[profile.dev.package."*"]
+opt-level = 2

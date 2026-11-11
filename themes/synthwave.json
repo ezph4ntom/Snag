@@ -1,0 +1,25 @@
+{
+  "name": "Synthwave",
+  "dark": true,
+  "colors": {
+    "background": "#1a1033",
+    "panel": "#241645",
+    "text": "#f8e9ff",
+    "text_dim": "#b9a3d6",
+    "accent": "#ff3fa4",
+    "accent_text": "#1a1033",
+    "widget": "#33205e",
+    "widget_hover": "#432a78",
+    "widget_active": "#55348f",
+    "border": "#5b3a96",
+    "success": "#3ff2c4",
+    "warning": "#ffd23f",
+    "error": "#ff5470",
+    "timeline": "#2e1c57",
+    "timeline_selection": "#36e2ff55",
+    "playhead": "#36e2ff"
+  },
+  "fonts": { "body": 14.5, "heading": 22.0, "button": 14.5, "small": 12.0, "mono": 13.0, "family": null },
+  "corner_radius": 10.0,
+  "spacing": { "item": [9.0, 7.0], "button_padding": [12.0, 6.0], "window_margin": 14.0, "indent": 18.0 }
+}
