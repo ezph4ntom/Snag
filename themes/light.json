@@ -1,25 +1,43 @@
 {
-  "name": "Light",
+  "name": "Snag Light",
   "dark": false,
   "colors": {
-    "background": "#f4f5f7",
-    "panel": "#ffffff",
-    "text": "#1f2329",
-    "text_dim": "#6b7280",
-    "accent": "#2563eb",
+    "background": "#e4e1d9",
+    "panel": "#f7f5ef",
+    "text": "#12141a",
+    "text_dim": "#4a4f5a",
+    "accent": "#c2361a",
     "accent_text": "#ffffff",
-    "widget": "#e8eaee",
-    "widget_hover": "#dde1e7",
-    "widget_active": "#cfd5de",
-    "border": "#d4d8df",
-    "success": "#16a34a",
-    "warning": "#c2780a",
-    "error": "#dc2626",
-    "timeline": "#e2e5ea",
-    "timeline_selection": "#2563eb44",
-    "playhead": "#111827"
+    "widget": "#ebe7de",
+    "widget_hover": "#dfdad0",
+    "widget_active": "#d5d1c6",
+    "border": "#cfcabd",
+    "success": "#15803d",
+    "warning": "#b45309",
+    "error": "#b91c1c",
+    "timeline": "#dcd8ce",
+    "timeline_selection": "#c2361a44",
+    "playhead": "#12141a"
   },
-  "fonts": { "body": 14.0, "heading": 20.0, "button": 14.0, "small": 11.5, "mono": 13.0, "family": null },
-  "corner_radius": 6.0,
-  "spacing": { "item": [8.0, 6.0], "button_padding": [10.0, 5.0], "window_margin": 12.0, "indent": 18.0 }
+  "fonts": {
+    "body": 14.0,
+    "heading": 21.0,
+    "button": 14.0,
+    "small": 11.5,
+    "mono": 13.0,
+    "family": null
+  },
+  "corner_radius": 8.0,
+  "spacing": {
+    "item": [
+      8.0,
+      6.0
+    ],
+    "button_padding": [
+      11.0,
+      6.0
+    ],
+    "window_margin": 12.0,
+    "indent": 18.0
+  }
 }

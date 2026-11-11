@@ -1,13 +1,13 @@
 <#
 .SYNOPSIS
-  Copies ffmpeg.exe and ffprobe.exe into .\bin so ClipApp uses its own
+  Copies ffmpeg.exe and ffprobe.exe into .\bin so Snag uses its own
   bundled copy (the "sidecar") instead of whatever is on PATH.
 
 .DESCRIPTION
-  ClipApp looks for ffmpeg in this order:
-    1. %CLIPAPP_FFMPEG_DIR%
+  Snag looks for ffmpeg in this order:
+    1. %SNAG_FFMPEG_DIR%
     2. bin\ next to the themes\ and assets\ folders (this script fills it)
-    3. bin\ next to clipapp.exe, then next to clipapp.exe itself
+    3. bin\ next to snag.exe, then next to snag.exe itself
     4. every folder on PATH (including PATH entries added after login)
 
   You need an ffmpeg *full* build that includes h264_nvenc, h264_amf,
@@ -50,9 +50,9 @@ foreach ($tool in "ffmpeg", "ffprobe") {
     Write-Host "copied $src -> bin\$tool.exe"
 }
 
-# Sanity check: the encoders ClipApp uses must be compiled in.
+# Sanity check: the encoders Snag uses must be compiled in.
 $encoders = & (Join-Path $dest "ffmpeg.exe") -hide_banner -encoders 2>$null | Out-String
 foreach ($e in "h264_nvenc", "h264_amf", "h264_qsv", "libx264") {
     if ($encoders -match "\b$e\b") { Write-Host "  [ok] $e" } else { Write-Warning "  this ffmpeg build lacks $e" }
 }
-Write-Host "Done. ClipApp will now use $dest"
+Write-Host "Done. Snag will now use $dest"

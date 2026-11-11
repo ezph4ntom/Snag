@@ -1,6 +1,6 @@
 //! The window: Clips (trimmer), Settings, Quality and Appearance tabs.
 //!
-//! Runs as its own process (`clipapp.exe --ui`), started by the core. It
+//! Runs as its own process (`snag.exe --ui`), started by the core. It
 //! reads `CoreStatus` lines on stdin and writes `UiToCore` commands on stdout
 //! (see `app::ipc`). Settings are saved straight to settings.json and the
 //! core is told to reload them.
@@ -103,15 +103,18 @@ struct App {
     appearance: appearance_tab::AppearanceTab,
     /// Window to minimize (without focus) once eframe has shown it.
     minimize_pending: Option<isize>,
+    /// The header logo, drawn in the theme's text and accent colors.
+    logo: Option<(egui::TextureHandle, (Color32, Color32))>,
 }
 
 pub fn run(args: UiArgs) -> Result<()> {
     crate::logging::init("ui");
+    crate::paths::migrate_from_clipapp();
     let (settings, _) = Settings::load();
     let tab = Tab::parse(args.tab.as_deref().unwrap_or("clips"));
 
     let mut viewport = egui::ViewportBuilder::default()
-        .with_title("ClipApp")
+        .with_title("Snag")
         .with_inner_size([1120.0, 740.0])
         .with_min_inner_size([820.0, 540.0])
         .with_icon(app_icon());
@@ -128,7 +131,7 @@ pub fn run(args: UiArgs) -> Result<()> {
 
     let minimized = args.minimized;
     eframe::run_native(
-        "ClipApp",
+        "Snag",
         options,
         Box::new(move |cc| {
             let hwnd = window_hwnd(cc);
@@ -177,6 +180,7 @@ pub fn run(args: UiArgs) -> Result<()> {
                 quality: quality_tab::QualityTab::default(),
                 appearance: appearance_tab::AppearanceTab::default(),
                 minimize_pending: if minimized { hwnd } else { None },
+                logo: None,
             }))
         }),
     )
@@ -221,21 +225,9 @@ fn minimize_without_focus(hwnd: isize) {
 }
 
 fn app_icon() -> egui::IconData {
-    // Same look as the tray icon: dark rounded square, red dot.
+    // The Snag app icon (ink rounded square, bitten play, Ember dot).
     const S: u32 = 64;
-    let mut rgba = Vec::with_capacity((S * S * 4) as usize);
-    for y in 0..S {
-        for x in 0..S {
-            let (fx, fy) = (x as f32 + 0.5 - 32.0, y as f32 + 0.5 - 32.0);
-            let qx = (fx.abs() - 22.0).max(0.0);
-            let qy = (fy.abs() - 22.0).max(0.0);
-            let bg = (0.5 - ((qx * qx + qy * qy).sqrt() - 10.0)).clamp(0.0, 1.0);
-            let dot = (0.5 - ((fx * fx + fy * fy).sqrt() - 14.0)).clamp(0.0, 1.0);
-            let mix = |a: f32, b: f32| (a * (1.0 - dot) + b * dot) as u8;
-            rgba.extend_from_slice(&[mix(32.0, 235.0), mix(34.0, 64.0), mix(40.0, 52.0), (bg.max(dot) * 255.0) as u8]);
-        }
-    }
-    egui::IconData { rgba, width: S, height: S }
+    egui::IconData { rgba: crate::brand::app_icon_rgba(S, crate::brand::EMBER), width: S, height: S }
 }
 
 impl App {
@@ -312,11 +304,33 @@ impl App {
     }
 
     fn tab_bar(&mut self, ui: &mut egui::Ui) {
+        let c = self.shared.theme.colors.clone();
+        // Redraw the logo when the theme's colors change: the glyph takes the
+        // text color and the dot follows the accent, as on the brand board.
+        let key = (c.text.0, c.accent.0);
+        if self.logo.as_ref().is_none_or(|(_, k)| *k != key) {
+            let rgb = |c: Color32| [c.r(), c.g(), c.b()];
+            let px = crate::brand::glyph_rgba(64, rgb(c.text.0), rgb(c.accent.0));
+            let image = egui::ColorImage::from_rgba_unmultiplied([64, 64], &px);
+            let tex = ui.ctx().load_texture("snag-logo", image, egui::TextureOptions::LINEAR);
+            self.logo = Some((tex, key));
+        }
         ui.horizontal(|ui| {
             ui.add_space(4.0);
-            status_dot(ui, self.shared.theme.colors.error.0);
-            ui.label(RichText::new("ClipApp").strong().color(self.shared.theme.colors.accent.0));
-            ui.add_space(12.0);
+            if let Some((tex, _)) = &self.logo {
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::hover());
+                let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+                ui.painter().image(tex.id(), rect, uv, Color32::WHITE);
+            }
+            // The wordmark: lowercase, bold, tightly tracked (-0.04 em).
+            ui.label(
+                RichText::new("snag")
+                    .family(crate::themes::brand_bold_family())
+                    .size(21.0)
+                    .extra_letter_spacing(-0.8)
+                    .color(c.text.0),
+            );
+            ui.add_space(14.0);
             for (tab, label) in [
                 (Tab::Clips, "Clips & trimmer"),
                 (Tab::Settings, "Settings"),
@@ -346,7 +360,7 @@ impl App {
         let Some(s) = self.shared.status.clone().filter(|_| self.connected) else {
             ui.horizontal(|ui| {
                 status_dot(ui, c.text_dim.0);
-                ui.label(RichText::new("Not connected to the ClipApp tray process (start clipapp.exe to record)").color(c.text_dim.0));
+                ui.label(RichText::new("Not connected to the Snag tray process (start snag.exe to record)").color(c.text_dim.0));
             });
             return;
         };
@@ -361,8 +375,9 @@ impl App {
                 self.shared.outbox.push(UiToCore::SaveClip);
             }
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                // The recording dot is the logo's dot: the theme accent.
                 let color = if s.recording && s.state == "Recording" {
-                    c.error.0
+                    c.accent.0
                 } else if s.recording {
                     c.warning.0
                 } else {

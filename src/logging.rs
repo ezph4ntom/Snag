@@ -3,7 +3,7 @@
 //! Why not `env_logger`/`tracing`? We need a file (release builds have no
 //! console) and almost nothing else, so ~50 lines beat a dependency tree.
 //! Each process writes its own file (`core.log`, `ui.log`) in
-//! `%LOCALAPPDATA%\ClipApp\logs`; files over 5 MB are rotated to `.old.log`.
+//! `%LOCALAPPDATA%\Snag\logs`; files over 5 MB are rotated to `.old.log`.
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -20,7 +20,7 @@ struct FileLogger {
 impl Log for FileLogger {
     fn enabled(&self, metadata: &Metadata) -> bool {
         // Keep noisy dependencies (winit, glow, ...) at warn and above.
-        let ours = metadata.target().starts_with("clipapp");
+        let ours = metadata.target().starts_with("snag");
         metadata.level() <= self.level && (ours || metadata.level() <= Level::Warn)
     }
 
@@ -28,7 +28,7 @@ impl Log for FileLogger {
         if !self.enabled(record.metadata()) {
             return;
         }
-        let target = record.target().trim_start_matches("clipapp::");
+        let target = record.target().trim_start_matches("snag::");
         let line = format!(
             "{} {:<5} [{}] {}\n",
             crate::win::log_timestamp(),
@@ -56,7 +56,7 @@ impl Log for FileLogger {
 }
 
 /// Installs the logger. `name` becomes the file name (`core` -> `core.log`).
-/// Set `CLIPAPP_LOG=debug` for verbose logs.
+/// Set `SNAG_LOG=debug` for verbose logs.
 pub fn init(name: &str) {
     let dir = crate::paths::log_dir();
     let _ = std::fs::create_dir_all(&dir);
@@ -65,7 +65,7 @@ pub fn init(name: &str) {
         let _ = std::fs::rename(&path, dir.join(format!("{name}.old.log")));
     }
     let file = OpenOptions::new().create(true).append(true).open(&path).ok();
-    let level = match std::env::var("CLIPAPP_LOG").as_deref() {
+    let level = match std::env::var("SNAG_LOG").as_deref() {
         Ok("trace") => LevelFilter::Trace,
         Ok("debug") => LevelFilter::Debug,
         Ok("warn") => LevelFilter::Warn,
@@ -73,7 +73,7 @@ pub fn init(name: &str) {
     };
     let logger = FileLogger {
         file: Mutex::new(file),
-        also_stderr: cfg!(debug_assertions) || std::env::var_os("CLIPAPP_LOG_STDERR").is_some(),
+        also_stderr: cfg!(debug_assertions) || std::env::var_os("SNAG_LOG_STDERR").is_some(),
         level,
     };
     if log::set_boxed_logger(Box::new(logger)).is_ok() {

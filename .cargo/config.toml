@@ -1,4 +1,4 @@
-# Link the C runtime statically, so clipapp.exe runs on PCs that don't have
+# Link the C runtime statically, so snag.exe runs on PCs that don't have
 # the "Microsoft Visual C++ Redistributable" installed (e.g. a friend's PC).
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]

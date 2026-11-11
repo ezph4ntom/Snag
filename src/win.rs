@@ -117,6 +117,29 @@ pub fn wait_timeout(
     }
 }
 
+/// True if the Windows taskbar uses the light theme (Settings >
+/// Personalization > Colors > "Choose your default Windows mode" = Light).
+pub fn taskbar_is_light() -> bool {
+    use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
+    use windows::core::w;
+    let mut value = 0u32;
+    let mut len = 4u32;
+    // SAFETY: reading one DWORD into a 4-byte buffer.
+    let ok = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            w!(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"),
+            w!("SystemUsesLightTheme"),
+            RRF_RT_REG_DWORD,
+            None,
+            Some(&mut value as *mut u32 as *mut _),
+            Some(&mut len),
+        )
+    }
+    .is_ok();
+    ok && value == 1
+}
+
 /// Shows a modal error dialog (for fatal startup errors in GUI builds,
 /// where there's no console to print to).
 pub fn error_box(text: &str) {
@@ -125,7 +148,7 @@ pub fn error_box(text: &str) {
     let text = to_wide(text);
     // SAFETY: valid NUL-terminated strings.
     unsafe {
-        MessageBoxW(None, PCWSTR(text.as_ptr()), w!("ClipApp"), MB_OK | MB_ICONERROR);
+        MessageBoxW(None, PCWSTR(text.as_ptr()), w!("Snag"), MB_OK | MB_ICONERROR);
     }
 }
 

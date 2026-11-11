@@ -15,8 +15,8 @@ labels: bug
 
 **Game / app being recorded** (and fullscreen, borderless or windowed?)
 
-**Your PC**: paste the output of `clipapp.exe --detect`, or a screenshot of the Quality tab.
+**Your PC**: paste the output of `snag.exe --detect`, or a screenshot of the Quality tab.
 
-**Logs**: attach `core.log` (and `ui.log` if the window misbehaved) from `%LOCALAPPDATA%\ClipApp\logs`.
+**Logs**: attach `core.log` (and `ui.log` if the window misbehaved) from `%LOCALAPPDATA%\Snag\logs`.
 
-**ClipApp version**: (from the zip name, e.g. v0.2.0)
+**Snag version**: (from the zip name, e.g. v0.2.0)

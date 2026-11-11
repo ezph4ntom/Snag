@@ -5,7 +5,7 @@ title: "[Feedback] "
 labels: feedback
 ---
 
-**What would make ClipApp better for you?**
+**What would make Snag better for you?**
 
 **How did it feel to use?** (setup, hotkeys, trimmer, quality, performance in games)
 

@@ -8,19 +8,19 @@
 //! cargo test --release --test reliability -- --ignored --nocapture
 //! ```
 //!
-//! Choose the encoder with `CLIPAPP_TEST_ENCODER=nvenc|amf|qsv|x264`
+//! Choose the encoder with `SNAG_TEST_ENCODER=nvenc|amf|qsv|x264`
 //! (default: the best one that works on this machine).
 
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use clipapp::audio::{AudioSource, AudioSourceFactory, BeepSource};
-use clipapp::buffer::clip::save_clip;
-use clipapp::buffer::source::{FrameSource, SyntheticSource, WgcSource};
-use clipapp::buffer::{Recorder, RecorderConfig, SourceFactory};
-use clipapp::encode::EncoderKind;
-use clipapp::verify::{ClipReport, Crop, verify_clip};
+use snag::audio::{AudioSource, AudioSourceFactory, BeepSource};
+use snag::buffer::clip::save_clip;
+use snag::buffer::source::{FrameSource, SyntheticSource, WgcSource};
+use snag::buffer::{Recorder, RecorderConfig, SourceFactory};
+use snag::encode::EncoderKind;
+use snag::verify::{ClipReport, Crop, verify_clip};
 
 const CLIPS: usize = 50;
 const CLIP_SECONDS: f64 = 4.0;
@@ -31,14 +31,14 @@ const FPS: u32 = 60;
 
 /// Returns the encoder to test and whether its D3D11 upload path works.
 fn pick_encoder() -> (EncoderKind, bool) {
-    let wanted = match std::env::var("CLIPAPP_TEST_ENCODER").as_deref() {
+    let wanted = match std::env::var("SNAG_TEST_ENCODER").as_deref() {
         Ok("nvenc") => Some(EncoderKind::Nvenc),
         Ok("amf") => Some(EncoderKind::Amf),
         Ok("qsv") => Some(EncoderKind::Qsv),
         Ok("x264") => Some(EncoderKind::X264),
         _ => None,
     };
-    let probes = clipapp::encode::detect::probe_all();
+    let probes = snag::encode::detect::probe_all();
     let p = probes
         .iter()
         .find(|p| p.works && wanted.is_none_or(|w| w == p.kind))
@@ -47,7 +47,7 @@ fn pick_encoder() -> (EncoderKind, bool) {
 }
 
 fn scratch_dir(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("clipapp-{name}-{}", std::process::id()));
+    let d = std::env::temp_dir().join(format!("snag-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     d
@@ -66,8 +66,8 @@ fn run(
     crop: Option<Crop>,
     verify_during_recording: bool,
 ) -> Vec<ClipReport> {
-    clipapp::logging::init(&format!("test-{name}"));
-    clipapp::encode::detect::ffmpeg_version().expect("ffmpeg must be installed (see README)");
+    snag::logging::init(&format!("test-{name}"));
+    snag::encode::detect::ffmpeg_version().expect("ffmpeg must be installed (see README)");
     let (encoder, gpu_upload) = pick_encoder();
     let root = scratch_dir(name);
     let clips_dir = root.join("clips");
@@ -223,10 +223,10 @@ fn fifty_clips_synthetic() {
 #[test]
 #[ignore = "takes ~1 min, shows a test window, needs a desktop session; run with --ignored"]
 fn fifty_clips_live_capture() {
-    let mon = clipapp::capture::primary_monitor().expect("a monitor");
+    let mon = snag::capture::primary_monitor().expect("a monitor");
     let (w, h) = (mon.width & !1, mon.height & !1);
     let (pw, ph) = (640, 360);
-    let pattern = clipapp::verify::pattern::PatternWindow::open(mon.x, mon.y, pw, ph).expect("pattern window");
+    let pattern = snag::verify::pattern::PatternWindow::open(mon.x, mon.y, pw, ph).expect("pattern window");
     std::thread::sleep(Duration::from_millis(300));
     let (t0, p0) = (Instant::now(), pattern.paints.load(std::sync::atomic::Ordering::Relaxed));
     let handle = mon.handle;
@@ -237,7 +237,7 @@ fn fifty_clips_live_capture() {
     // would test the OS, not our pipeline.
     // Real PC audio (WASAPI loopback); whatever is (or isn't) playing.
     let audio: AudioSourceFactory =
-        Box::new(|| Box::new(clipapp::audio::loopback::LoopbackSource::new()) as Box<dyn AudioSource>);
+        Box::new(|| Box::new(snag::audio::loopback::LoopbackSource::new()) as Box<dyn AudioSource>);
     let reports = run("live", w, h, source, audio, false, Some((0, 0, pw as u32, ph as u32)), false);
     let paints = pattern.paints.load(std::sync::atomic::Ordering::Relaxed).wrapping_sub(p0);
     println!(

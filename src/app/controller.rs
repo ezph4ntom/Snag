@@ -44,7 +44,7 @@ pub enum Event {
     ClipDone(Result<ClipResult, String>),
     ScreenshotDone(Result<PathBuf, String>),
     FromUi(UiToCore),
-    /// A second `clipapp.exe` was started: show the window.
+    /// A second `snag.exe` was started: show the window.
     ShowUi,
 }
 
@@ -75,6 +75,8 @@ pub struct Controller {
     hotkey_notes: Vec<String>,
     /// When a "press the new hotkey" capture started (it times out).
     capture_started: Option<Instant>,
+    /// Taskbar theme the tray icon was drawn for.
+    light_taskbar: bool,
     last_clip: Option<PathBuf>,
     note: String,
     /// Auto-restart after a recorder failure, with backoff.
@@ -114,6 +116,7 @@ impl Controller {
             pending_switch: None,
             hotkey_notes: Vec::new(),
             capture_started: None,
+            light_taskbar: crate::win::taskbar_is_light(),
             last_clip: None,
             note: String::new(),
             restart_at: None,
@@ -186,17 +189,17 @@ impl Controller {
             }
         }
         if let Err(e) = crate::encode::detect::ffmpeg_version() {
-            self.note = "ffmpeg is missing: install it with  winget install Gyan.FFmpeg  and restart ClipApp".into();
+            self.note = "ffmpeg is missing: install it with  winget install Gyan.FFmpeg  and restart Snag".into();
             log::error!("ffmpeg not found: {e:#}");
             // Tell the user how to fix it (on a separate thread: the dialog
             // blocks until closed).
             std::thread::spawn(|| {
                 crate::win::error_box(
-                    "ClipApp needs ffmpeg to record, and it isn't installed.\n\n\
+                    "Snag needs ffmpeg to record, and it isn't installed.\n\n\
                      To install it, open PowerShell (or Terminal) and run:\n\n\
                          winget install Gyan.FFmpeg\n\n\
-                     Then quit ClipApp (right-click the tray icon > Quit) and start it again.\n\
-                     (Or put ffmpeg.exe and ffprobe.exe in a \"bin\" folder next to clipapp.exe.)",
+                     Then quit Snag (right-click the tray icon > Quit) and start it again.\n\
+                     (Or put ffmpeg.exe and ffprobe.exe in a \"bin\" folder next to snag.exe.)",
                 );
             });
         }
@@ -359,6 +362,12 @@ impl Controller {
             }
             self.send_status();
             self.last_status = Instant::now();
+            // Windows switched between light and dark mode: redraw the tray icon.
+            let light = crate::win::taskbar_is_light();
+            if light != self.light_taskbar {
+                self.light_taskbar = light;
+                self.update_tray();
+            }
         }
     }
 
@@ -541,9 +550,9 @@ impl Controller {
         let recording = self.recorder.is_some();
         let state = if recording { "recording" } else { "stopped" };
         let tooltip = if self.note.is_empty() {
-            format!("ClipApp: {state}")
+            format!("Snag: {state}")
         } else {
-            format!("ClipApp: {state}\n{}", self.note)
+            format!("Snag: {state}\n{}", self.note)
         };
         post_to_main(MainRequest::UpdateTray {
             recording,

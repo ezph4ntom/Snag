@@ -34,7 +34,7 @@ use windows::core::{PCWSTR, w};
 use crate::hotkeys::{self, Hotkey, ID_CLIP, ID_SCREENSHOT};
 use controller::{Controller, Event};
 
-const CLASS_NAME: PCWSTR = w!("ClipAppCoreWindow");
+const CLASS_NAME: PCWSTR = w!("SnagCoreWindow");
 const WM_APP_REQUEST: u32 = WM_APP + 1;
 const WM_APP_SHOW: u32 = WM_APP + 2;
 const WM_APP_QUIT: u32 = WM_APP + 3;
@@ -182,7 +182,7 @@ fn create_message_window() -> Result<HWND> {
         CreateWindowExW(
             WINDOW_EX_STYLE(0),
             CLASS_NAME,
-            w!("ClipApp"),
+            w!("Snag"),
             WINDOW_STYLE(0),
             0,
             0,
@@ -197,7 +197,7 @@ fn create_message_window() -> Result<HWND> {
     }
 }
 
-/// `clipapp.exe --quit`: asks a running instance to exit cleanly (stops the
+/// `snag.exe --quit`: asks a running instance to exit cleanly (stops the
 /// buffer, closes the window). Returns false if none is running.
 pub fn quit_running_instance() -> bool {
     // SAFETY: finding and posting to another process's message window.
@@ -213,12 +213,12 @@ pub fn quit_running_instance() -> bool {
 pub fn run_core() -> Result<()> {
     crate::win::set_dpi_awareness();
     crate::logging::init("core");
-    log::info!("ClipApp {} starting (pid {})", env!("CARGO_PKG_VERSION"), std::process::id());
+    log::info!("Snag {} starting (pid {})", env!("CARGO_PKG_VERSION"), std::process::id());
 
     // Single instance: a second launch just asks the first to show its window.
     // SAFETY: named mutex creation; the handle intentionally lives until exit.
     unsafe {
-        let _mutex = CreateMutexW(None, true, w!("Local\\ClipApp.Core.SingleInstance"))?;
+        let _mutex = CreateMutexW(None, true, w!("Local\\Snag.Core.SingleInstance"))?;
         if GetLastError() == ERROR_ALREADY_EXISTS {
             if let Ok(other) = FindWindowExW(Some(HWND_MESSAGE), None, CLASS_NAME, PCWSTR::null()) {
                 let _ = PostMessageW(Some(other), WM_APP_SHOW, WPARAM(0), LPARAM(0));
@@ -228,9 +228,20 @@ pub fn run_core() -> Result<()> {
         }
     }
 
+    // An older build named "ClipApp" still running would fight us for the
+    // hotkeys and the GPU encoder: ask it to quit (its own quit message).
+    // SAFETY: finding and posting to another process's message window.
+    unsafe {
+        if let Ok(old) = FindWindowExW(Some(HWND_MESSAGE), None, w!("ClipAppCoreWindow"), PCWSTR::null()) {
+            log::info!("asking the old ClipApp instance to quit");
+            let _ = PostMessageW(Some(old), WM_APP_QUIT, WPARAM(0), LPARAM(0));
+        }
+    }
+
     // Buffers left behind by a crash are useless now; start clean.
     let _ = std::fs::remove_dir_all(crate::paths::buffer_root());
 
+    crate::paths::migrate_from_clipapp();
     let (settings, first_launch) = crate::config::Settings::load();
     let (tx, rx) = mpsc::channel::<Event>();
     let _ = EVENTS.set(tx.clone());

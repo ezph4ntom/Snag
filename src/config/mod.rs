@@ -1,4 +1,4 @@
-//! User settings, stored as pretty JSON in `%APPDATA%\ClipApp\settings.json`.
+//! User settings, stored as pretty JSON in `%APPDATA%\Snag\settings.json`.
 //!
 //! `#[serde(default)]` on every struct means a settings file from an older
 //! version (missing fields) still loads: missing fields take their defaults.

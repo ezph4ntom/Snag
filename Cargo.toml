@@ -1,6 +1,6 @@
 [package]
-name = "clipapp"
-version = "0.2.0"
+name = "snag"
+version = "0.3.0"
 edition = "2024"
 description = "Lightweight game-clipping app for Windows (replay buffer, screenshots, trimmer)"
 
@@ -8,11 +8,11 @@ description = "Lightweight game-clipping app for Windows (replay buffer, screens
 # binary (src/main.rs). Integration tests in tests/ link against the library,
 # which is how the 50-clip reliability test drives the real pipeline.
 [lib]
-name = "clipapp"
+name = "snag"
 path = "src/lib.rs"
 
 [[bin]]
-name = "clipapp"
+name = "snag"
 path = "src/main.rs"
 
 [dependencies]
@@ -84,3 +84,6 @@ panic = "unwind"   # keep unwinding so a panicking worker thread can be logged a
 # while developing, but keep our own crate fast to compile.
 [profile.dev.package."*"]
 opt-level = 2
+
+[build-dependencies]
+embed-resource = "3.0.12"

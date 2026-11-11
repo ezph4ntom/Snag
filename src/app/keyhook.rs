@@ -10,7 +10,7 @@
 //!   swallowed, whatever key it is. Esc cancels.
 //!
 //! Limitation (Windows security): a hook doesn't receive keys while a
-//! program running as administrator is focused, unless ClipApp also runs as
+//! program running as administrator is focused, unless Snag also runs as
 //! administrator. Hotkeys registered the normal way don't have that limit.
 //!
 //! The hook procedure runs synchronously for every key press system-wide, so

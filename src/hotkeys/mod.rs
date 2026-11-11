@@ -9,7 +9,7 @@
 //! * A low-level keyboard hook (see `app::keyhook`) for everything Windows
 //!   refuses: keys another program already registered, keys Windows keeps
 //!   for itself, and lone modifiers. The hook sees each key first and
-//!   swallows it, so ClipApp wins over the other program.
+//!   swallows it, so Snag wins over the other program.
 //!
 //! Hotkeys are stored in settings as text like `"Ctrl+Shift+F10"`.
 
@@ -201,7 +201,7 @@ impl Hotkey {
     }
 
     /// A key that types or does something on its own (no modifier). Bound
-    /// as a hotkey, it stops reaching other apps while ClipApp runs.
+    /// as a hotkey, it stops reaching other apps while Snag runs.
     pub fn is_plain_key(&self) -> bool {
         !(self.ctrl || self.alt || self.shift || self.win) && !self.is_modifier_only()
     }

@@ -71,27 +71,33 @@ pub struct Colors {
     /// The kept region between the trim handles.
     pub timeline_selection: Hex,
     pub playhead: Hex,
+    /// Small controls: slider rails, checkbox/radio fills, scrollbar
+    /// handles. Optional; defaults to `widget`. Needed when `widget` is the
+    /// same as the background (e.g. pure black), or those parts vanish.
+    pub control: Option<Hex>,
 }
 
 impl Default for Colors {
+    /// Snag Dark (Ember): the brand's ink palette with the Ember accent.
     fn default() -> Self {
         Colors {
-            background: Hex::rgb(0x1b, 0x1d, 0x22),
-            panel: Hex::rgb(0x23, 0x26, 0x2d),
-            text: Hex::rgb(0xe4, 0xe6, 0xeb),
-            text_dim: Hex::rgb(0x9a, 0xa0, 0xab),
-            accent: Hex::rgb(0x4f, 0x8c, 0xff),
-            accent_text: Hex::rgb(0xff, 0xff, 0xff),
-            widget: Hex::rgb(0x31, 0x35, 0x3e),
-            widget_hover: Hex::rgb(0x3b, 0x40, 0x4b),
-            widget_active: Hex::rgb(0x46, 0x4c, 0x59),
-            border: Hex::rgb(0x3a, 0x3f, 0x4a),
-            success: Hex::rgb(0x3f, 0xc6, 0x7f),
-            warning: Hex::rgb(0xf0, 0xa5, 0x2a),
-            error: Hex::rgb(0xef, 0x53, 0x50),
-            timeline: Hex::rgb(0x2c, 0x30, 0x38),
-            timeline_selection: Hex(Color32::from_rgba_unmultiplied(0x4f, 0x8c, 0xff, 0x55)),
-            playhead: Hex::rgb(0xff, 0xff, 0xff),
+            background: Hex::rgb(0x0e, 0x11, 0x16),
+            panel: Hex::rgb(0x14, 0x18, 0x20),
+            text: Hex::rgb(0xf2, 0xf4, 0xf8),
+            text_dim: Hex::rgb(0x9a, 0xa3, 0xb2),
+            accent: Hex::rgb(0xf0, 0x4a, 0x24),
+            accent_text: Hex::rgb(0x0e, 0x11, 0x16),
+            widget: Hex::rgb(0x1c, 0x22, 0x2b),
+            widget_hover: Hex::rgb(0x25, 0x2c, 0x37),
+            widget_active: Hex::rgb(0x2f, 0x37, 0x43),
+            border: Hex::rgb(0x2a, 0x31, 0x3c),
+            success: Hex::rgb(0x34, 0xd3, 0x99),
+            warning: Hex::rgb(0xfb, 0xbf, 0x24),
+            error: Hex::rgb(0xff, 0x6b, 0x81),
+            timeline: Hex::rgb(0x1a, 0x1f, 0x27),
+            timeline_selection: Hex(Color32::from_rgba_unmultiplied(0xf0, 0x4a, 0x24, 0x59)),
+            playhead: Hex::rgb(0xf2, 0xf4, 0xf8),
+            control: None,
         }
     }
 }
@@ -162,7 +168,7 @@ pub struct Theme {
 impl Default for Theme {
     fn default() -> Self {
         Theme {
-            name: "Built-in dark".into(),
+            name: "Snag Dark (built-in)".into(),
             dark: true,
             colors: Colors::default(),
             fonts: Fonts::default(),
@@ -244,6 +250,10 @@ pub fn apply(ctx: &egui::Context, theme: &Theme, fonts_changed: bool) {
     visuals.window_corner_radius = radius(theme.corner_radius * 1.5);
     visuals.menu_corner_radius = radius(theme.corner_radius);
 
+    // egui draws buttons, combo boxes and selectable rows with `weak_bg_fill`,
+    // and slider rails, checkbox/radio boxes and scrollbar handles with
+    // `bg_fill`; the optional `control` color goes to the latter.
+    let control = c.control.map(|h| h.0);
     let w = &mut visuals.widgets;
     for (wv, fill) in [
         (&mut w.noninteractive, c.panel.0),
@@ -257,6 +267,11 @@ pub fn apply(ctx: &egui::Context, theme: &Theme, fonts_changed: bool) {
         wv.corner_radius = radius(theme.corner_radius);
         wv.fg_stroke = Stroke::new(1.0, c.text.0);
     }
+    if let Some(ctrl) = control {
+        for wv in [&mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
+            wv.bg_fill = ctrl;
+        }
+    }
     w.noninteractive.bg_stroke = Stroke::new(1.0, c.border.0);
     w.noninteractive.fg_stroke = Stroke::new(1.0, c.text.0);
     w.inactive.bg_stroke = Stroke::new(1.0, c.border.0);
@@ -267,8 +282,11 @@ pub fn apply(ctx: &egui::Context, theme: &Theme, fonts_changed: bool) {
     style.visuals = visuals;
     let f = &theme.fonts;
     let family = FontFamily::Proportional;
+    // Headings use the brand's bold weight, unless the theme brings its own
+    // (single-weight) font.
+    let heading_family = if f.family.is_some() { family.clone() } else { brand_bold_family() };
     style.text_styles = [
-        (TextStyle::Heading, FontId::new(f.heading, family.clone())),
+        (TextStyle::Heading, FontId::new(f.heading, heading_family)),
         (TextStyle::Body, FontId::new(f.body, family.clone())),
         (TextStyle::Button, FontId::new(f.button, family.clone())),
         (TextStyle::Small, FontId::new(f.small, family)),
@@ -286,7 +304,7 @@ pub fn apply(ctx: &egui::Context, theme: &Theme, fonts_changed: bool) {
     ctx.set_style_of(egui_theme, style);
 
     if fonts_changed {
-        let mut defs = FontDefinitions::default();
+        let mut defs = brand_fonts();
         if let Some(file) = &f.family {
             let path = crate::paths::themes_dir().join(file);
             match std::fs::read(&path) {
@@ -301,6 +319,33 @@ pub fn apply(ctx: &egui::Context, theme: &Theme, fonts_changed: bool) {
         }
         ctx.set_fonts(defs);
     }
+}
+
+/// Space Grotesk, the brand typeface (SIL Open Font License, see
+/// assets/fonts/SpaceGrotesk-OFL.txt). Built into the exe so the UI always
+/// has it: Medium for all text, Bold for headings and the wordmark.
+static SPACE_GROTESK_MEDIUM: &[u8] = include_bytes!("../../assets/fonts/SpaceGrotesk-Medium.ttf");
+static SPACE_GROTESK_BOLD: &[u8] = include_bytes!("../../assets/fonts/SpaceGrotesk-Bold.ttf");
+
+/// Font family for headings and the "snag" wordmark.
+pub fn brand_bold_family() -> FontFamily {
+    FontFamily::Name("brand-bold".into())
+}
+
+/// egui's default fonts with Space Grotesk in front. egui's own fonts stay
+/// behind it as fallbacks for symbols Space Grotesk doesn't have.
+fn brand_fonts() -> FontDefinitions {
+    let mut defs = FontDefinitions::default();
+    defs.font_data.insert("space-grotesk".into(), Arc::new(FontData::from_static(SPACE_GROTESK_MEDIUM)));
+    defs.font_data.insert("space-grotesk-bold".into(), Arc::new(FontData::from_static(SPACE_GROTESK_BOLD)));
+    let fallbacks = defs.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
+    if let Some(list) = defs.families.get_mut(&FontFamily::Proportional) {
+        list.insert(0, "space-grotesk".into());
+    }
+    let mut bold = vec!["space-grotesk-bold".to_string()];
+    bold.extend(fallbacks);
+    defs.families.insert(brand_bold_family(), bold);
+    defs
 }
 
 /// Modification time, for hot-reloading a theme file while you edit it.
@@ -327,7 +372,7 @@ mod tests {
 
     #[test]
     fn bom_is_tolerated() {
-        let path = std::env::temp_dir().join(format!("clipapp-bom-{}.json", std::process::id()));
+        let path = std::env::temp_dir().join(format!("snag-bom-{}.json", std::process::id()));
         std::fs::write(&path, "\u{feff}{\"name\":\"BOM\"}").unwrap();
         assert_eq!(load_file(&path).unwrap().name, "BOM");
         let _ = std::fs::remove_file(&path);

@@ -306,7 +306,7 @@ impl TrimmerTab {
         }
 
         // ---- preview -------------------------------------------------------
-        let controls_h = 190.0;
+        let controls_h = 215.0; // room for the transport row to wrap on narrow windows
         let avail = ui.available_size();
         let area = vec2(avail.x, (avail.y - controls_h).max(120.0));
         let (w, h) = (l.size.0 as f32, l.size.1 as f32);
@@ -325,7 +325,7 @@ impl TrimmerTab {
         let p = l.probe.clone();
         let n = p.frame_count();
         ui.add_space(6.0);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             if ui.button("|<").on_hover_text("Go to start handle (Home)").clicked() {
                 stop_and_seek(l, effective_start(&p, l.start, mode));
             }
@@ -350,15 +350,19 @@ impl TrimmerTab {
                 l.end = l.playhead.max(l.start + 1).min(n - 1);
             }
             ui.separator();
-            ui.label(
-                RichText::new(format!(
-                    "{} / {}   frame {}/{}",
-                    fmt_time(p.time_of(l.playhead)),
-                    fmt_time(p.duration()),
-                    l.playhead + 1,
-                    n
-                ))
-                .monospace(),
+            // Never split mid-text; on a narrow window it moves down whole.
+            ui.add(
+                egui::Label::new(
+                    RichText::new(format!(
+                        "{} / {}   frame {}/{}",
+                        fmt_time(p.time_of(l.playhead)),
+                        fmt_time(p.duration()),
+                        l.playhead + 1,
+                        n
+                    ))
+                    .monospace(),
+                )
+                .wrap_mode(egui::TextWrapMode::Extend),
             );
         });
 
@@ -629,6 +633,9 @@ fn timeline(ui: &mut egui::Ui, l: &mut Loaded, colors: &crate::themes::Colors, m
     let dim = colors.text_dim.0;
 
     painter.rect_filled(track, radius.min(8.0), colors.timeline.0);
+    // Outline, so the track stays visible when it's the same color as the
+    // background (OLED black).
+    painter.rect_stroke(track, radius.min(8.0), Stroke::new(1.0, colors.border.0), egui::StrokeKind::Inside);
     // Second marks along the top, labelled every 5 s.
     let dur = l.probe.duration();
     let mut s = 0.0;

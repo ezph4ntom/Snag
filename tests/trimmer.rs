@@ -6,20 +6,20 @@
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
-use clipapp::audio::{AudioSource, AudioSourceFactory, BeepSource};
-use clipapp::buffer::clip::save_clip;
-use clipapp::buffer::source::{FrameSource, SyntheticSource};
-use clipapp::buffer::{Recorder, RecorderConfig, SourceFactory};
-use clipapp::trimmer::{Output, TrimJob, TrimMode, effective_start, probe, trim};
-use clipapp::verify::verify_clip;
+use snag::audio::{AudioSource, AudioSourceFactory, BeepSource};
+use snag::buffer::clip::save_clip;
+use snag::buffer::source::{FrameSource, SyntheticSource};
+use snag::buffer::{Recorder, RecorderConfig, SourceFactory};
+use snag::trimmer::{Output, TrimJob, TrimMode, effective_start, probe, trim};
+use snag::verify::verify_clip;
 
 #[test]
 #[ignore = "needs ffmpeg and a few seconds; run with --ignored"]
 fn fast_and_precise_trims_are_frame_exact() {
-    clipapp::logging::init("test-trimmer");
-    let probes = clipapp::encode::detect::probe_all();
+    snag::logging::init("test-trimmer");
+    let probes = snag::encode::detect::probe_all();
     let enc = probes.iter().find(|p| p.works).expect("an encoder");
-    let root = std::env::temp_dir().join(format!("clipapp-trim-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("snag-trim-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
 
     // 1. A 4-second source clip with frame-number barcodes.

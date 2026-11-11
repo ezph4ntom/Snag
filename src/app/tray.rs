@@ -14,36 +14,27 @@ pub struct Tray {
     toggle: MenuItem,
     save: MenuItem,
     shot: MenuItem,
-    idle_icon: Icon,
-    rec_icon: Icon,
+    /// (recording, light taskbar) -> icon, built lazily.
+    icons: std::cell::RefCell<std::collections::HashMap<(bool, bool), Icon>>,
 }
 
-/// Draws the tray icon procedurally (no image files to ship): a dark
-/// rounded square with a dot, red while recording, gray when stopped.
-fn make_icon(recording: bool) -> Icon {
-    const S: usize = 32;
-    let mut rgba = vec![0u8; S * S * 4];
-    let dot = if recording { [235, 64, 52] } else { [150, 150, 150] };
-    for y in 0..S {
-        for x in 0..S {
-            let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
-            // Rounded square: distance outside a 22x22 box with 5 px corners.
-            let qx = ((fx - 16.0).abs() - 11.0).max(0.0);
-            let qy = ((fy - 16.0).abs() - 11.0).max(0.0);
-            let sq = (qx * qx + qy * qy).sqrt() - 5.0;
-            let bg_a = (0.5 - sq).clamp(0.0, 1.0);
-            // Dot of radius 7 in the middle, anti-aliased edge.
-            let d = ((fx - 16.0).powi(2) + (fy - 16.0).powi(2)).sqrt() - 7.0;
-            let dot_a = (0.5 - d).clamp(0.0, 1.0);
-            let base = [32.0, 34.0, 40.0];
-            let px = &mut rgba[(y * S + x) * 4..][..4];
-            for c in 0..3 {
-                px[c] = (base[c] * (1.0 - dot_a) + dot[c] as f32 * dot_a) as u8;
-            }
-            px[3] = (bg_a.max(dot_a) * 255.0) as u8;
-        }
+/// The Snag glyph for the tray: light on a dark taskbar, dark on a light
+/// one (Windows "light mode"), sized to the system's small-icon size. The
+/// dot is Ember while recording and grey when stopped.
+fn make_icon(recording: bool, light_taskbar: bool) -> Icon {
+    use crate::brand;
+    // SAFETY: plain metric query (16 px at 100% scaling, 32 at 200%).
+    let size = unsafe {
+        windows::Win32::UI::WindowsAndMessaging::GetSystemMetrics(windows::Win32::UI::WindowsAndMessaging::SM_CXSMICON)
     }
-    Icon::from_rgba(rgba, S as u32, S as u32).expect("valid icon")
+    .clamp(16, 64) as u32;
+    let body = if light_taskbar { brand::DARK_GLYPH } else { brand::LIGHT };
+    let dot = match (recording, light_taskbar) {
+        (true, _) => brand::EMBER,
+        (false, true) => brand::MUTED_ON_LIGHT,
+        (false, false) => brand::MUTED,
+    };
+    Icon::from_rgba(brand::glyph_rgba(size, body, dot), size, size).expect("valid icon")
 }
 
 const ID_SAVE: &str = "save_clip";
@@ -68,7 +59,7 @@ impl Tray {
             &MenuItem::with_id(ID_TRIM, "Clips && trimmer...", true, None),
             &MenuItem::with_id(ID_SETTINGS, "Settings...", true, None),
             &PredefinedMenuItem::separator(),
-            &MenuItem::with_id(ID_QUIT, "Quit ClipApp", true, None),
+            &MenuItem::with_id(ID_QUIT, "Quit Snag", true, None),
         ])?;
 
         // Menu clicks arrive on this (main) thread via the tray's window
@@ -100,11 +91,11 @@ impl Tray {
             }
         }));
 
-        let idle_icon = make_icon(false);
+        let idle_icon = make_icon(false, crate::win::taskbar_is_light());
         let icon = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
             .with_menu_on_left_click(false)
-            .with_tooltip("ClipApp")
+            .with_tooltip("Snag")
             .with_icon(idle_icon.clone())
             .build()?;
         Ok(Tray {
@@ -112,14 +103,15 @@ impl Tray {
             toggle,
             save,
             shot,
-            idle_icon,
-            rec_icon: make_icon(true),
+            icons: Default::default(),
         })
     }
 
     /// Updates icon, tooltip and menu labels.
     pub fn update(&self, recording: bool, tooltip: &str, clip_key: &str, shot_key: &str) {
-        let _ = self.icon.set_icon(Some(if recording { self.rec_icon.clone() } else { self.idle_icon.clone() }));
+        let light = crate::win::taskbar_is_light();
+        let icon = self.icons.borrow_mut().entry((recording, light)).or_insert_with(|| make_icon(recording, light)).clone();
+        let _ = self.icon.set_icon(Some(icon));
         // Windows limits tray tooltips to 127 characters.
         let tip: String = tooltip.chars().take(127).collect();
         let _ = self.icon.set_tooltip(Some(tip));

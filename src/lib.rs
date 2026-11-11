@@ -1,12 +1,12 @@
-﻿//! ClipApp: a lightweight game-clipping app for Windows.
+﻿//! Snag: a lightweight game-clipping app for Windows.
 //!
 //! The crate is a library so the integration tests in `tests/` can drive the
 //! real pipeline; `src/main.rs` is only an argument parser that picks a mode.
 //!
 //! Process model (see README "Architecture"):
-//! * **Core process** (`clipapp.exe`): tray icon, global hotkeys, capture,
+//! * **Core process** (`snag.exe`): tray icon, global hotkeys, capture,
 //!   encoding, replay buffer. It has no UI window, so its idle cost stays low.
-//! * **UI process** (`clipapp.exe --ui`): the egui window with the trimmer,
+//! * **UI process** (`snag.exe --ui`): the egui window with the trimmer,
 //!   settings, quality and theme tabs. It is started on demand by the core and
 //!   exits when closed, so the GPU context and fonts are only in memory while
 //!   you're actually looking at it.
@@ -18,6 +18,7 @@
 
 pub mod app;
 pub mod audio;
+pub mod brand;
 pub mod buffer;
 pub mod capture;
 pub mod config;

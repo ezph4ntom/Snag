@@ -400,14 +400,14 @@ pub mod pattern {
                     let class = WNDCLASSW {
                         lpfnWndProc: Some(wndproc),
                         hInstance: hinst.into(),
-                        lpszClassName: w!("ClipAppTestPattern"),
+                        lpszClassName: w!("SnagTestPattern"),
                         ..Default::default()
                     };
                     RegisterClassW(&class);
                     let hwnd = match CreateWindowExW(
                         WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-                        w!("ClipAppTestPattern"),
-                        w!("ClipApp test pattern"),
+                        w!("SnagTestPattern"),
+                        w!("Snag test pattern"),
                         WS_POPUP | WS_VISIBLE,
                         x, y, w, h,
                         None, None, Some(hinst.into()), None,

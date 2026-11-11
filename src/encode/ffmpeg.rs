@@ -173,7 +173,7 @@ fn create_audio_pipe() -> Result<(String, std::fs::File)> {
     use windows::core::PCWSTR;
     static COUNTER: AtomicU32 = AtomicU32::new(0);
     let name = format!(
-        r"\\.\pipe\clipapp-audio-{}-{}",
+        r"\\.\pipe\snag-audio-{}-{}",
         std::process::id(),
         COUNTER.fetch_add(1, Ordering::Relaxed)
     );
@@ -346,6 +346,12 @@ impl FfmpegHlsEncoder {
                 for line in BufReader::new(stderr).lines().map_while(|l| l.ok()) {
                     let line = line.trim().to_string();
                     if line.is_empty() {
+                        continue;
+                    }
+                    // Expected notices about our endless WAV audio stream: not problems.
+                    const BENIGN: [&str; 2] = ["Ignoring maximum wav data size", "Guessed Channel Layout"];
+                    if BENIGN.iter().any(|b| line.contains(b)) {
+                        log::debug!("ffmpeg: {line}");
                         continue;
                     }
                     log::warn!("ffmpeg: {line}");

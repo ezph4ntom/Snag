@@ -1,9 +1,9 @@
 //! Where everything lives on disk.
 //!
-//! * Settings:        `%APPDATA%\ClipApp\settings.json` (roams with the user profile)
-//! * Buffer + logs:   `%LOCALAPPDATA%\ClipApp\` (machine-local, never roams)
-//! * Clips:           `%USERPROFILE%\Videos\ClipApp` by default
-//! * Screenshots:     `%USERPROFILE%\Pictures\ClipApp` by default
+//! * Settings:        `%APPDATA%\Snag\settings.json` (roams with the user profile)
+//! * Buffer + logs:   `%LOCALAPPDATA%\Snag\` (machine-local, never roams)
+//! * Clips:           `%USERPROFILE%\Videos\Snag` by default
+//! * Screenshots:     `%USERPROFILE%\Pictures\Snag` by default
 //! * Resources:       `themes\`, `assets\`, `bin\ffmpeg.exe` next to the exe
 //!   (or in the project root when running via `cargo run`)
 
@@ -17,7 +17,7 @@ use windows::Win32::UI::Shell::{
 };
 use windows::core::GUID;
 
-pub const APP_NAME: &str = "ClipApp";
+pub const APP_NAME: &str = "Snag";
 
 fn known_folder(id: &GUID) -> Option<PathBuf> {
     // SAFETY: SHGetKnownFolderPath allocates a string we must free with
@@ -36,14 +36,32 @@ fn env_dir(var: &str) -> PathBuf {
         .unwrap_or_else(std::env::temp_dir)
 }
 
-/// `%APPDATA%\ClipApp` (settings).
+/// `%APPDATA%\Snag` (settings).
 pub fn config_dir() -> PathBuf {
     known_folder(&FOLDERID_RoamingAppData)
         .unwrap_or_else(|| env_dir("APPDATA"))
         .join(APP_NAME)
 }
 
-/// `%LOCALAPPDATA%\ClipApp` (buffer, logs).
+/// Snag was called "ClipApp" before v0.3. If this PC has ClipApp settings
+/// but no Snag settings yet, copy them over (the old file stays as it was).
+/// Folder paths stored in them (e.g. `Videos\ClipApp`) are kept, so existing
+/// clips stay where they are.
+pub fn migrate_from_clipapp() {
+    let new = settings_file();
+    if new.exists() {
+        return;
+    }
+    let old = known_folder(&FOLDERID_RoamingAppData)
+        .unwrap_or_else(|| env_dir("APPDATA"))
+        .join("ClipApp")
+        .join("settings.json");
+    if old.is_file() && std::fs::create_dir_all(config_dir()).is_ok() && std::fs::copy(&old, &new).is_ok() {
+        log::info!("imported settings from {}", old.display());
+    }
+}
+
+/// `%LOCALAPPDATA%\Snag` (buffer, logs).
 pub fn local_dir() -> PathBuf {
     known_folder(&FOLDERID_LocalAppData)
         .unwrap_or_else(|| env_dir("LOCALAPPDATA"))
@@ -89,7 +107,7 @@ pub fn exe_dir() -> PathBuf {
 pub fn resource_dir() -> &'static Path {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
     DIR.get_or_init(|| {
-        if let Some(dir) = std::env::var_os("CLIPAPP_RESOURCES") {
+        if let Some(dir) = std::env::var_os("SNAG_RESOURCES") {
             return PathBuf::from(dir);
         }
         let exe = exe_dir();
@@ -114,13 +132,13 @@ pub fn clip_sound_file() -> PathBuf {
 
 /// Finds a sidecar tool (`ffmpeg` or `ffprobe`).
 ///
-/// Search order: `CLIPAPP_FFMPEG_DIR` env var, `bin\` next to the resources,
+/// Search order: `SNAG_FFMPEG_DIR` env var, `bin\` next to the resources,
 /// next to the exe, then every folder on `PATH`. Falls back to the bare name
 /// so the error message from `Command::spawn` is still meaningful.
 fn find_tool(name: &str) -> PathBuf {
     let file = format!("{name}.exe");
     let mut dirs: Vec<PathBuf> = Vec::new();
-    if let Some(d) = std::env::var_os("CLIPAPP_FFMPEG_DIR") {
+    if let Some(d) = std::env::var_os("SNAG_FFMPEG_DIR") {
         dirs.push(PathBuf::from(d));
     }
     dirs.push(resource_dir().join("bin"));

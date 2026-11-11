@@ -1,6 +1,7 @@
-# ClipApp
+# Snag
 
 A lightweight game-clipping app for Windows 10/11, written in Rust.
+(Called ClipApp before v0.3; settings carry over automatically.)
 
 * **Replay buffer**: always keeps the last N seconds (default 30) of video
   **and PC audio**. Press **Ctrl+F10** and they're saved as an MP4 without
@@ -15,7 +16,8 @@ A lightweight game-clipping app for Windows 10/11, written in Rust.
   stepping, lossless "fast" cut or frame-exact "precise" cut.
 * **Auto-tuned quality**: detects your GPU/encoders/CPU/RAM/monitors and
   picks Quality/Balanced/Performance, and explains why.
-* **Themes**: JSON files, hot-reloaded. Dark, Light and Synthwave included.
+* **Themes**: JSON files, hot-reloaded. Snag Dark (Ember), Tide, Dusk,
+  Light, OLED (pure black) and Synthwave included.
 
 Measured on the development PC (RTX 3070 Ti, 20 threads, 1080p @ 144 Hz),
 recording 1080p60 NVENC + PC audio: **~1.8 % total CPU and ~95 MB private
@@ -54,15 +56,15 @@ cargo build --release
 
 # 3. Run: a tray icon appears; on first launch the Quality tab opens
 #    showing what auto-tune picked and why.
-.\target\release\clipapp.exe
+.\target\release\snag.exe
 ```
 
 During development `cargo run` works too (debug builds keep a console
 window with the live log). Other command-line options:
 
 ```powershell
-clipapp.exe --detect   # print hardware detection + the three presets, then exit
-clipapp.exe --quit     # ask the running instance to exit cleanly
+snag.exe --detect   # print hardware detection + the three presets, then exit
+snag.exe --quit     # ask the running instance to exit cleanly
 ```
 
 The exe links the C runtime statically (`.cargo/config.toml`), so it runs
@@ -75,16 +77,16 @@ powershell -ExecutionPolicy Bypass -File scripts\package.ps1          # without 
 powershell -ExecutionPolicy Bypass -File scripts\package.ps1 -WithFfmpeg
 ```
 
-creates `dist\ClipApp\` and `dist\ClipApp-v<version>.zip`. Without ffmpeg,
+creates `dist\Snag\` and `dist\Snag-v<version>.zip`. Without ffmpeg,
 testers install it once with `winget install Gyan.FFmpeg`; if it's missing
-ClipApp shows a message with that exact command. (ffmpeg full builds are
+Snag shows a message with that exact command. (ffmpeg full builds are
 GPL-licensed: bundling them means also shipping their license and a source link.)
 
 ### Running on another PC: hardware detection
 
 Yes, detection works on any PC you move the app to, automatically:
 
-* Settings live in that PC's `%APPDATA%\ClipApp`, not in the app folder,
+* Settings live in that PC's `%APPDATA%\Snag`, not in the app folder,
   so a copied app starts fresh there: it detects the GPU (DXGI), runs a
   real test encode with every encoder (so it only picks one that actually
   works there), reads CPU threads, RAM and monitors, then picks a preset.
@@ -105,7 +107,7 @@ git push
 
 # bump `version` in Cargo.toml, then build the zip and publish a release
 powershell -ExecutionPolicy Bypass -File scripts\package.ps1
-gh release create v0.3.0 dist\ClipApp-v0.3.0.zip --title "ClipApp v0.3.0" --notes "What changed..."
+gh release create v0.3.0 dist\Snag-v0.3.0.zip --title "Snag v0.3.0" --notes "What changed..."
 ```
 
 Testers report back through **Issues** (bug report and feedback templates
@@ -130,7 +132,7 @@ cargo test --release --test trimmer -- --ignored --nocapture       # trim exactn
 * `fifty_clips_live_capture`: the same through **real screen capture and
   real PC audio**: a 640x360 test-pattern window flashes in the top-left
   corner for about a minute while the primary monitor is recorded.
-* `CLIPAPP_TEST_ENCODER=nvenc|amf|qsv|x264` picks the encoder (default: best available).
+* `SNAG_TEST_ENCODER=nvenc|amf|qsv|x264` picks the encoder (default: best available).
 
 Last results on the development PC (NVENC): **synthetic 50/50**, **live
 50/50**, 0 dropped frames, 0 repeated frames, worst A/V offset 6 ms,
@@ -144,26 +146,26 @@ average save time 0.65 s. Trims: frame-exact in both modes, audio kept in sync.
 |---|---|
 | Save the last N seconds | **Ctrl+F10** (tray: *Save clip*) |
 | Screenshot | **Ctrl+F11** (tray: *Take screenshot*) |
-| Open the window | left-click the tray icon, or run `clipapp.exe` again |
+| Open the window | left-click the tray icon, or run `snag.exe` again |
 | Start/stop the buffer | tray menu, or the status bar button |
 | Rebind hotkeys | Settings tab: click the hotkey, press the new key (Esc cancels) |
 
 **Hotkeys** can be *any* key, with or without Ctrl/Alt/Shift/Win, including
-keys Windows or another program use. ClipApp takes them over:
+keys Windows or another program use. Snag takes them over:
 * Windows' own hotkey registration is used when Windows allows it.
 * Otherwise (key taken by another program, reserved like Print Screen, or a
   lone modifier like Right Ctrl), a keyboard hook catches the key first.
   Limitation: hook-caught keys don't fire while a program running *as
-  administrator* is focused (run ClipApp as administrator too if you need that).
+  administrator* is focused (run Snag as administrator too if you need that).
 * A plain key (e.g. `F9` or `P`) stops reaching games and other apps while
-  ClipApp runs; a lone modifier (e.g. Right Ctrl) keeps working normally.
+  Snag runs; a lone modifier (e.g. Right Ctrl) keeps working normally.
 * Picking the other action's key swaps the two hotkeys.
 
 **PC audio**: everything you hear (the default playback device) is recorded
 as 160 kbps AAC. Switching outputs (speakers to headset) is followed
 automatically. Toggle it and pick the quality in Settings → Audio.
 
-Clips go to `Videos\ClipApp`, screenshots to `Pictures\ClipApp` (both
+Clips go to `Videos\Snag`, screenshots to `Pictures\Snag` (both
 configurable). After a clip is saved, a sound plays and the clip is loaded
 into the trimmer, which starts **minimized without taking focus** so a game
 in front keeps running. Choose "in front" or "do nothing" in Settings.
@@ -179,12 +181,20 @@ I / O set start / end at the playhead, Home / End jump to the handles.
 and on/off are in Settings. A copy of the default sound is built into the
 exe as a fallback.
 
-**Settings file**: `%APPDATA%\ClipApp\settings.json`. Hand edits are picked
-up within a second. **Logs**: `%LOCALAPPDATA%\ClipApp\logs\core.log` and `ui.log`
-(set `CLIPAPP_LOG=debug` for more detail). Any dropped frame is logged there
+**Settings file**: `%APPDATA%\Snag\settings.json`. Hand edits are picked
+up within a second. **Logs**: `%LOCALAPPDATA%\Snag\logs\core.log` and `ui.log`
+(set `SNAG_LOG=debug` for more detail). Any dropped frame is logged there
 as `DROPPED n frame(s)`.
 
 **Themes**: see [themes/README.md](themes/README.md) for the JSON schema and a full example.
+
+**Branding**: the logo (a play button with a bite taken out; the accent dot
+is the clip you snagged) is drawn in code in `src/brand.rs` from the brand
+board's geometry, and produces every icon: tray (light or dark to match the
+taskbar, dot Ember while recording, grey when stopped), window/taskbar, the
+header, and the .exe icon (`build.rs`). The typeface is Space Grotesk
+(Medium + Bold, built into the exe; SIL Open Font License, see
+`assets/fonts/SpaceGrotesk-OFL.txt`).
 
 ---
 
@@ -194,8 +204,8 @@ as `DROPPED n frame(s)`.
 
 | Process | Contains | Why |
 |---|---|---|
-| `clipapp.exe` (core) | tray icon, hotkeys, focus tracking, capture, audio, replay buffer | always running, so it has no window, no GPU UI context, no fonts |
-| `clipapp.exe --ui` | egui window: trimmer, settings, quality, themes | started on demand, exits when closed. An egui window costs ~80 MB, which only matters while you're looking at it |
+| `snag.exe` (core) | tray icon, hotkeys, focus tracking, capture, audio, replay buffer | always running, so it has no window, no GPU UI context, no fonts |
+| `snag.exe --ui` | egui window: trimmer, settings, quality, themes | started on demand, exits when closed. An egui window costs ~80 MB, which only matters while you're looking at it |
 | `ffmpeg.exe` (sidecar) | H.264 + AAC encoding, segment writing | v1 encoder; swappable (see below) |
 
 The core and UI talk over the UI's stdin/stdout, one JSON message per line
@@ -233,7 +243,7 @@ The core and UI talk over the UI's stdin/stdout, one JSON message per line
   detection off. Every segment, and therefore every clip, starts on a
   clean frame.
 * **Crash-safe buffer**: ffmpeg's HLS muxer writes 1-second fragmented-MP4
-  segments to `%LOCALAPPDATA%\ClipApp\buffer`. A segment only appears under
+  segments to `%LOCALAPPDATA%\Snag\buffer`. A segment only appears under
   its final name when it's complete, so a crash can't corrupt anything
   already written. Old segments are deleted automatically.
 * **Saving a clip** (`src/buffer/clip.rs`): wait for the segment containing
@@ -302,7 +312,7 @@ ffmpeg details that matter (all measured; see comments in `src/encode/ffmpeg.rs`
    microphone track and no per-game audio yet. The first 0.5 s after the
    buffer (re)starts is silent.
 2. **Hook-caught hotkeys** (keys Windows wouldn't register) don't fire while
-   an administrator program is focused, unless ClipApp also runs as administrator.
+   an administrator program is focused, unless Snag also runs as administrator.
 3. **One GPU→CPU→GPU round trip per frame** because the encoder is a separate
    ffmpeg process (~190 MB/s of NV12 at 1080p60). Cheap on desktop GPUs; an
    in-process encoder would remove it.
@@ -310,7 +320,7 @@ ffmpeg details that matter (all measured; see comments in `src/encode/ffmpeg.rs`
    (`MinUpdateInterval` is unavailable), so at 60 fps recording an occasional
    frame can be repeated when a game renders faster than 60 fps.
 5. **When the whole CPU is saturated** (all cores at 100 %), the Windows
-   compositor itself can skip frames. ClipApp then repeats the last frame,
+   compositor itself can skip frames. Snag then repeats the last frame,
    which is correct (no newer image exists).
 6. **Protected content and old exclusive-fullscreen games** (some DX9 titles)
    may capture black: a Windows Graphics Capture restriction.
@@ -344,12 +354,12 @@ ffmpeg details that matter (all measured; see comments in `src/encode/ffmpeg.rs`
 
 ## Troubleshooting
 
-* **"ClipApp needs ffmpeg"**: run `winget install Gyan.FFmpeg`, then restart
-  ClipApp. Or run `scripts\bundle-ffmpeg.ps1`, or put `ffmpeg.exe` and
-  `ffprobe.exe` in a `bin` folder next to `clipapp.exe`.
+* **"Snag needs ffmpeg"**: run `winget install Gyan.FFmpeg`, then restart
+  Snag. Or run `scripts\bundle-ffmpeg.ps1`, or put `ffmpeg.exe` and
+  `ffprobe.exe` in a `bin` folder next to `snag.exe`.
 * **A hotkey doesn't fire in one game**: that game probably runs as
   administrator (see limitation 2). Pick a key Windows can register (with
-  Ctrl/Alt/Shift), or run ClipApp as administrator.
+  Ctrl/Alt/Shift), or run Snag as administrator.
 * **No sound in clips**: check Settings → Audio, and that the game plays
   through the *default* playback device.
 * **Black clips**: see limitation 6. Try borderless-windowed mode in the game.

@@ -4,7 +4,7 @@
 //! * **Fast** mode copies the compressed video untouched (lossless, takes a
 //!   fraction of a second). The cut can only *start* on a keyframe, because
 //!   frames after a keyframe are stored as differences from it; the end can
-//!   be any frame. ClipApp records a keyframe every second, so the start
+//!   be any frame. Snag records a keyframe every second, so the start
 //!   snaps to the nearest second at or before your handle.
 //! * **Precise** mode re-encodes, so it can start on any frame. Slower and
 //!   very slightly lossy (high bitrate keeps it visually identical).

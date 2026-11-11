@@ -94,7 +94,7 @@ impl SettingsTab {
                 ui.spacing_mut().slider_width = 320.0;
                 ui.add(egui::Slider::new(&mut secs, 5..=300).step_by(5.0).suffix(" s"));
             });
-            ui.checkbox(&mut start, "Start the replay buffer when ClipApp starts");
+            ui.checkbox(&mut start, "Start the replay buffer when Snag starts");
         });
         let s = &mut shared.settings;
         if secs != s.buffer_seconds || start != s.start_buffer_on_launch {
@@ -132,7 +132,7 @@ impl SettingsTab {
             ui.label(
                 RichText::new(
                     "Click a hotkey, then press any key: F-keys, letters, Print Screen, a lone Right Ctrl, \
-                     with or without Ctrl/Alt/Shift/Win. ClipApp takes the key over even if Windows or \
+                     with or without Ctrl/Alt/Shift/Win. Snag takes the key over even if Windows or \
                      another program uses it. Picking the other action's key swaps the two.",
                 )
                 .small(),
@@ -181,9 +181,9 @@ impl SettingsTab {
             *other = mine.clone();
             self.capture_note = Some(format!("{text} was the other hotkey; the two were swapped."));
         } else if hk.is_plain_key() {
-            self.capture_note = Some(format!("{text} will only trigger ClipApp now; it no longer reaches games or other apps while ClipApp runs."));
+            self.capture_note = Some(format!("{text} will only trigger Snag now; it no longer reaches games or other apps while Snag runs."));
         } else if hk.is_modifier_only() {
-            self.capture_note = Some(format!("{text} keeps working normally too; pressing it alone triggers ClipApp."));
+            self.capture_note = Some(format!("{text} keeps working normally too; pressing it alone triggers Snag."));
         }
         *mine = text;
         shared.mark_dirty();
@@ -222,7 +222,7 @@ impl SettingsTab {
         }
         match Hotkey::from_parts(mods.ctrl, mods.alt, mods.shift, false, key_name(key)) {
             Some(hk) => self.apply_hotkey(which, hk, shared),
-            None => self.capture_error = Some(format!("{} can't be recorded here; start ClipApp (the tray app) to record any key", key.name())),
+            None => self.capture_error = Some(format!("{} can't be recorded here; start Snag (the tray app) to record any key", key.name())),
         }
     }
 

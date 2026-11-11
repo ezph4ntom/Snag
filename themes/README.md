@@ -1,5 +1,10 @@
 # Themes
 
+Shipped: **Snag Dark** (`dark.json`, Ember accent, the default), **Snag
+Tide** and **Snag Dusk** (the brand's other two accents), **Snag Light**,
+**Snag OLED** (pure black for OLED screens: every surface is `#000000`,
+outlines and accents stay) and **Synthwave**.
+
 Each `*.json` file in this folder is a theme. The file name (without
 `.json`) is the theme's id; `name` is what the Appearance tab shows.
 
@@ -22,7 +27,7 @@ dark theme, so this is a complete, valid theme:
 | `dark` | bool | Base palette for parts not listed here (scrollbars, shadows). |
 | `colors` | object | See below. Colors are `"#RRGGBB"` or `"#RRGGBBAA"` (alpha last). |
 | `fonts.body` / `heading` / `button` / `small` / `mono` | number | Font sizes in points. |
-| `fonts.family` | string or `null` | A `.ttf`/`.otf` file, relative to this folder (e.g. `"fonts/Inter.ttf"`). `null` = built-in font. |
+| `fonts.family` | string or `null` | A `.ttf`/`.otf` file, relative to this folder (e.g. `"fonts/Inter.ttf"`). `null` = Snag's built-in Space Grotesk (Medium for text, Bold for headings). |
 | `corner_radius` | number | Widget corner radius in points (windows use 1.5x). 0 = square. |
 | `spacing.item` | `[x, y]` | Gap between widgets. |
 | `spacing.button_padding` | `[x, y]` | Padding inside buttons. |
@@ -43,34 +48,55 @@ dark theme, so this is a complete, valid theme:
 | `timeline` | Trimmer track |
 | `timeline_selection` | Kept region between the trim handles (use some transparency) |
 | `playhead` | Trimmer playhead line |
+| `control` *(optional)* | Small controls: slider rails, checkbox/radio fills, scrollbar handles. Defaults to `widget`. Set it when `widget` is the same as the background (like OLED's pure black), or those parts would disappear; OLED uses the outline color. |
+
+The header logo follows the theme too: the glyph takes `text`, the dot takes `accent`.
 
 ## Full example
 
 ```json
 {
-  "name": "Dark",
+  "name": "Snag Dark",
   "dark": true,
   "colors": {
-    "background": "#1b1d22",
-    "panel": "#23262d",
-    "text": "#e4e6eb",
-    "text_dim": "#9aa0ab",
-    "accent": "#4f8cff",
-    "accent_text": "#ffffff",
-    "widget": "#31353e",
-    "widget_hover": "#3b404b",
-    "widget_active": "#464c59",
-    "border": "#3a3f4a",
-    "success": "#3fc67f",
-    "warning": "#f0a52a",
-    "error": "#ef5350",
-    "timeline": "#2c3038",
-    "timeline_selection": "#4f8cff55",
-    "playhead": "#ffffff"
+    "background": "#0e1116",
+    "panel": "#141820",
+    "text": "#f2f4f8",
+    "text_dim": "#9aa3b2",
+    "accent": "#f04a24",
+    "accent_text": "#0e1116",
+    "widget": "#1c222b",
+    "widget_hover": "#252c37",
+    "widget_active": "#2f3743",
+    "border": "#2a313c",
+    "success": "#34d399",
+    "warning": "#fbbf24",
+    "error": "#ff6b81",
+    "timeline": "#1a1f27",
+    "timeline_selection": "#f04a2459",
+    "playhead": "#f2f4f8"
   },
-  "fonts": { "body": 14.0, "heading": 20.0, "button": 14.0, "small": 11.5, "mono": 13.0, "family": null },
-  "corner_radius": 6.0,
-  "spacing": { "item": [8.0, 6.0], "button_padding": [10.0, 5.0], "window_margin": 12.0, "indent": 18.0 }
+  "fonts": {
+    "body": 14.0,
+    "heading": 21.0,
+    "button": 14.0,
+    "small": 11.5,
+    "mono": 13.0,
+    "family": null
+  },
+  "corner_radius": 8.0,
+  "spacing": {
+    "item": [
+      8.0,
+      6.0
+    ],
+    "button_padding": [
+      11.0,
+      6.0
+    ],
+    "window_margin": 12.0,
+    "indent": 18.0
+  }
 }
 ```
 
