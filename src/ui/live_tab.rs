@@ -231,7 +231,7 @@ impl LiveTab {
                 for (i, r) in self.recent.iter().enumerate() {
                     let (tex, secs) = self.thumbs.get(&r.path).cloned().unwrap_or((None, None));
                     let resp = ui
-                        .allocate_ui(vec2(col_w, col_w * 9.0 / 16.0 + 26.0), |ui| {
+                        .allocate_ui_with_layout(vec2(col_w, col_w * 9.0 / 16.0 + 26.0), egui::Layout::top_down(egui::Align::Min), |ui| {
                             let (rect, resp) = ui.allocate_exact_size(vec2(col_w, col_w * 9.0 / 16.0), Sense::click());
                             ui.painter().rect_filled(rect, 8.0, c.preview.0);
                             if let Some(t) = &tex {

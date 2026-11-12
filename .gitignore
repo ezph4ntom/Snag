@@ -1,4 +1,13 @@
+# Build output
 /target
 /dist
-# Bundled ffmpeg sidecar (copied by scripts\bundle-ffmpeg.ps1; ~200 MB)
+
+# Bundled ffmpeg (copied by scripts\bundle-ffmpeg.ps1; ~200 MB)
 /bin
+
+# Half-written files, editor and OS clutter
+*.part
+.vs/
+.idea/
+Thumbs.db
+desktop.ini

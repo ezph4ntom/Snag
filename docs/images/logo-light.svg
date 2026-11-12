@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="20 8 92 104" width="92" height="104" role="img" aria-label="Snag logo">
+  <defs>
+    <mask id="bite-light">
+      <rect x="0" y="0" width="120" height="120" fill="#fff"/>
+      <circle cx="74" cy="37" r="18" fill="#000"/>
+    </mask>
+  </defs>
+  <polygon points="34,22 34,98 98,60" fill="#12141a" stroke="#12141a" stroke-width="14" stroke-linejoin="round" mask="url(#bite-light)"/>
+  <circle cx="74" cy="37" r="7" fill="#f04a24"/>
+</svg>
