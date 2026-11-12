@@ -21,7 +21,7 @@ Any of these already installed? Skip it. Check with `rustc --version`,
 ### Steps
 
 ```powershell
-cd C:\clipApp
+cd C:\Snag   # wherever you cloned the repository
 
 # 1. (Optional) bundle ffmpeg next to the app; otherwise it's found on PATH
 powershell -ExecutionPolicy Bypass -File scripts\bundle-ffmpeg.ps1
