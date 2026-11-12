@@ -49,7 +49,7 @@
 2. Keep **Install ffmpeg** ticked if it's offered (Snag uses it to encode).
 3. Play. Snag lives in the tray, and the replay buffer is already running.
 
-| | |
+| To | Press |
 |---|---|
 | Save the last 30 seconds | <kbd>Ctrl</kbd>+<kbd>F10</kbd> |
 | Screenshot | <kbd>Ctrl</kbd>+<kbd>F11</kbd> |
