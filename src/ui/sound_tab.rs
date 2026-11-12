@@ -149,6 +149,8 @@ fn monitor_main(out: Arc<Mutex<Snapshot>>, active: Arc<AtomicBool>, ctx: egui::C
 #[derive(Default)]
 pub struct SoundTab {
     monitor: Option<Monitor>,
+    /// When the last live volume update was sent to the recorder.
+    last_live: Option<Instant>,
 }
 
 /// One mixer strip's result.
@@ -237,6 +239,12 @@ impl SoundTab {
             });
         });
         if a != shared.settings.audio {
+            // Tell the recorder right away (at most 30 times a second), so a
+            // fader is heard while it's dragged, not only when let go.
+            if self.last_live.is_none_or(|t| t.elapsed() >= Duration::from_millis(33)) {
+                self.last_live = Some(Instant::now());
+                shared.outbox.push(crate::app::ipc::UiToCore::LiveAudio { audio: a.clone() });
+            }
             shared.settings.audio = a;
             shared.mark_dirty();
         }

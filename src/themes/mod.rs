@@ -298,6 +298,9 @@ pub fn apply(ctx: &egui::Context, theme: &Theme, fonts_changed: bool) {
     style.spacing.button_padding = Vec2::new(s.button_padding[0], s.button_padding[1]);
     style.spacing.window_margin = Margin::same(s.window_margin.clamp(0.0, 127.0) as i8);
     style.spacing.indent = s.indent;
+    // No built-in fade animations: each repaints the whole window at the
+    // monitor refresh rate (see ui::run).
+    style.animation_time = 0.0;
 
     let egui_theme = if theme.dark { egui::Theme::Dark } else { egui::Theme::Light };
     ctx.set_theme(egui_theme);

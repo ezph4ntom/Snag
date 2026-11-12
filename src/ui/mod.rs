@@ -143,6 +143,8 @@ struct App {
     preview_on: bool,
     /// Tab bar being dragged: the edge it would dock to.
     dock_target: Option<crate::config::TabDock>,
+    /// Icons-only side bar: open (showing names) while hovered.
+    bar_open: bool,
     /// Size of the tab bar last frame (for the snap preview).
     tab_bar_size: egui::Vec2,
     /// The area below the title bar last frame.
@@ -184,6 +186,10 @@ pub fn run(args: UiArgs) -> Result<()> {
             crate::themes::apply(&ctx, &theme, true);
             // UI size is set with the -/+ buttons in Settings only.
             ctx.options_mut(|o| o.zoom_with_keyboard = false);
+            // No built-in fade animations (scrollbars, hover colors): each one
+            // repaints the whole window at the monitor's refresh rate (144 Hz
+            // here), which made switching to a tall tab cost ~200 ms of CPU.
+            ctx.all_styles_mut(|s| s.animation_time = 0.0);
             ctx.set_zoom_factor(settings.ui.scale);
             if let Some(h) = hwnd {
                 chrome::install(h, &ctx);
@@ -236,6 +242,7 @@ pub fn run(args: UiArgs) -> Result<()> {
                 preview_on: false,
                 dock_target: None,
                 tab_bar_size: egui::vec2(160.0, 44.0),
+                bar_open: false,
                 content_rect: egui::Rect::NOTHING,
             }))
         }),
@@ -389,6 +396,7 @@ impl App {
         } else {
             egui::Layout::left_to_right(egui::Align::Center)
         };
+        let mut icon_rects: Vec<(Tab, egui::Rect)> = Vec::new();
         ui.with_layout(layout, |ui| {
             let grip_size = if vertical { egui::vec2(28.0, 14.0) } else { egui::vec2(14.0, 28.0) };
             let (grip_rect, grip) = ui.allocate_exact_size(grip_size, egui::Sense::drag());
@@ -404,7 +412,15 @@ impl App {
                     let bgc = if selected { fill } else if resp.hovered() { c.widget_hover.0 } else { fill };
                     ui.painter().rect_filled(rect, self.shared.theme.corner_radius, bgc);
                     chrome::paint_icon(ui.painter(), rect.shrink(9.0), tab.icon(), fg);
-                    resp.on_hover_text(tab.label())
+                    icon_rects.push((tab, rect));
+                    if !vertical {
+                        // Top/bottom bar: the name fades in under the icon.
+                        let t = ui.ctx().animate_bool_with_time(egui::Id::unique(("tab-name", tab.label())), resp.hovered(), 0.12);
+                        if t > 0.01 {
+                            name_popup(ui.ctx(), rect, tab.label(), t, &c);
+                        }
+                    }
+                    resp
                 } else {
                     let mut b = egui::Button::new(RichText::new(tab.label()).color(fg)).fill(fill);
                     if vertical {
@@ -417,6 +433,10 @@ impl App {
                 }
             }
         });
+
+        if icons && vertical {
+            self.slide_out(ui.ctx(), bar.expand(8.0), &icon_rects, dragging);
+        }
 
         if dragging {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
@@ -431,6 +451,75 @@ impl App {
                     self.shared.mark_dirty();
                 }
             }
+        }
+    }
+
+    /// Icons-only side bar: while the mouse is over it, a wider copy slides
+    /// out over the content (so nothing reflows) with the tab names.
+    fn slide_out(&mut self, ctx: &egui::Context, panel: egui::Rect, icons: &[(Tab, egui::Rect)], dragging: bool) {
+        const OPEN_W: f32 = 184.0;
+        let left = self.shared.settings.ui.tab_dock == crate::config::TabDock::Left;
+        // Start below the grip, so the bar can still be dragged while open.
+        let top = icons.first().map(|(_, r)| r.top() - 6.0).unwrap_or(panel.top());
+        let panel = egui::Rect::from_min_max(egui::pos2(panel.left(), top), panel.max);
+        let span = |w: f32| {
+            if left {
+                egui::Rect::from_min_size(panel.min, egui::vec2(w, panel.height()))
+            } else {
+                egui::Rect::from_min_max(egui::pos2(panel.max.x - w, panel.min.y), panel.max)
+            }
+        };
+        let hover_w = if self.bar_open { OPEN_W } else { panel.width() };
+        self.bar_open = !dragging && ctx.pointer_hover_pos().is_some_and(|p| span(hover_w).contains(p));
+        let t = ctx.animate_bool_with_time(egui::Id::unique("tabbar-open"), self.bar_open, 0.16);
+        if t <= 0.01 {
+            return;
+        }
+        let ease = 1.0 - (1.0 - t).powi(3); // ease-out
+        let rect = span(panel.width() + (OPEN_W - panel.width()) * ease);
+        let c = self.shared.theme.colors.clone();
+        let radius = self.shared.theme.corner_radius;
+        let mut clicked = None;
+        egui::Area::new(egui::Id::unique("tabbar-overlay"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(rect.min)
+            .show(ctx, |ui| {
+                // Give the area its full size (an empty area is skipped).
+                ui.set_min_size(rect.size());
+                ui.set_clip_rect(rect.expand(8.0));
+                let p = ui.painter().clone();
+                p.add(egui::Shape::rect_filled(rect.translate(egui::vec2(if left { 4.0 } else { -4.0 }, 0.0)), 0.0, Color32::from_black_alpha((60.0 * ease) as u8)));
+                p.rect_filled(rect, 0.0, c.panel.0);
+                let edge_x = if left { rect.right() } else { rect.left() };
+                p.line_segment([egui::pos2(edge_x, rect.top()), egui::pos2(edge_x, rect.bottom())], egui::Stroke::new(1.0, c.border.0));
+                for (tab, icon) in icons {
+                    let row = egui::Rect::from_min_max(egui::pos2(rect.left() + 8.0, icon.top()), egui::pos2(rect.right() - 8.0, icon.bottom()));
+                    let resp = ui.interact(row, egui::Id::unique(("tab-row", tab.label())), egui::Sense::click());
+                    let selected = self.tab == *tab;
+                    let (bg, fg) = if selected {
+                        (c.accent.0, c.accent_text.0)
+                    } else if resp.hovered() {
+                        (c.widget_hover.0, c.text.0)
+                    } else {
+                        (Color32::TRANSPARENT, c.text.0)
+                    };
+                    p.rect_filled(row, radius, bg);
+                    let icon_rect = egui::Rect::from_min_size(egui::pos2(row.left(), row.top()), egui::vec2(38.0, 38.0));
+                    chrome::paint_icon(&p, icon_rect.shrink(9.0), tab.icon(), fg);
+                    p.text(
+                        egui::pos2(icon_rect.right() + 4.0, row.center().y),
+                        egui::Align2::LEFT_CENTER,
+                        tab.label(),
+                        egui::FontId::proportional(self.shared.theme.fonts.body),
+                        fg.gamma_multiply(ease),
+                    );
+                    if resp.clicked() {
+                        clicked = Some(*tab);
+                    }
+                }
+            });
+        if let Some(tab) = clicked {
+            self.tab = tab;
         }
     }
 
@@ -610,6 +699,20 @@ impl eframe::App for App {
         }
         self.flush_outbox();
     }
+}
+
+/// A tab's name in a small rounded label under its icon, faded in by `t`.
+fn name_popup(ctx: &egui::Context, icon: egui::Rect, name: &str, t: f32, c: &crate::themes::Colors) {
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique(("tab-popup", name))));
+    let galley = painter.layout_no_wrap(name.to_string(), egui::FontId::proportional(13.0), c.text.0.gamma_multiply(t));
+    let size = galley.size() + egui::vec2(14.0, 8.0);
+    // Below the icon, or above it when the bar is at the bottom of the window.
+    let below = icon.bottom() + 6.0 + size.y < ctx.content_rect().bottom();
+    let y = if below { icon.bottom() + 6.0 - 4.0 * (1.0 - t) } else { icon.top() - 6.0 - size.y + 4.0 * (1.0 - t) };
+    let rect = egui::Rect::from_min_size(egui::pos2(icon.center().x - size.x / 2.0, y), size);
+    painter.rect_filled(rect, 6.0, c.widget.0.gamma_multiply(t));
+    painter.rect_stroke(rect, 6.0, egui::Stroke::new(1.0, c.border.0.gamma_multiply(t)), egui::StrokeKind::Inside);
+    painter.galley(rect.min + egui::vec2(7.0, 4.0), galley, c.text.0);
 }
 
 /// A small filled circle (recording indicator).

@@ -79,6 +79,20 @@ snag.exe --quit     # ask the running instance to exit cleanly
 The exe links the C runtime statically (`.cargo/config.toml`), so it runs
 on PCs without the Visual C++ Redistributable.
 
+### Installer (easiest for friends)
+
+```powershell
+winget install JRSoftware.InnoSetup                                 # once
+powershell -ExecutionPolicy Bypass -File scripts\installer.ps1     # -> dist\Snag-Setup-<version>.exe
+```
+
+The installer needs no administrator rights. It installs to
+`%LOCALAPPDATA%\Programs\Snag` and adds a Start menu shortcut, plus an
+optional desktop shortcut and "start with Windows". If ffmpeg is missing,
+it offers to install it with winget. It updates in place (a running Snag is
+closed first) and has a normal uninstaller; settings and clips are kept.
+The script is `installer\snag.iss`.
+
 ### Portable package (for testers)
 
 ```powershell

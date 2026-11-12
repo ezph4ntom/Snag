@@ -292,7 +292,7 @@ impl Controller {
                     if r.warnings.is_empty() { String::new() } else { format!("; {}", r.warnings.join("; ")) }
                 );
                 if self.settings.sound.enabled {
-                    crate::sound::play_clip_sound(self.settings.sound.volume);
+                    crate::sound::play_clip_sound(self.settings.sound.file.as_deref(), self.settings.sound.volume);
                 }
                 self.note = format!(
                     "Saved {} ({:.0} s)",
@@ -323,6 +323,11 @@ impl Controller {
                 error_beep();
             }
             Event::FromUi(UiToCore::ReloadSettings) => self.reload_settings(),
+            Event::FromUi(UiToCore::LiveAudio { audio }) => {
+                if !audio.needs_restart(&self.settings.audio) {
+                    self.audio_selection.set(audio);
+                }
+            }
             Event::FromUi(UiToCore::Preview { on }) => {
                 crate::capture::preview::WANTED.store(on, Ordering::Relaxed);
             }

@@ -247,6 +247,9 @@ pub struct SoundSettings {
     pub enabled: bool,
     /// 0.0 ..= 1.0
     pub volume: f32,
+    /// A sound file picked in Settings (WAV, MP3, OGG...). `None` uses
+    /// `assets/sounds/clip.wav`.
+    pub file: Option<PathBuf>,
 }
 
 impl Default for SoundSettings {
@@ -254,6 +257,7 @@ impl Default for SoundSettings {
         Self {
             enabled: true,
             volume: 0.6,
+            file: None,
         }
     }
 }

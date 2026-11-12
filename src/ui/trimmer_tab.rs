@@ -371,11 +371,9 @@ impl TrimmerTab {
             ui.add(
                 egui::Label::new(
                     RichText::new(format!(
-                        "{} / {}   frame {}/{}",
+                        "{} / {}",
                         fmt_time(p.time_of(l.playhead)),
-                        fmt_time(p.duration()),
-                        l.playhead + 1,
-                        n
+                        fmt_time(p.duration())
                     ))
                     .monospace(),
                 )
@@ -392,11 +390,10 @@ impl TrimmerTab {
         let kept_frames = l.end - eff + 1;
         ui.horizontal_wrapped(|ui| {
             ui.label(format!(
-                "Start {}   End {}   Keeping {} ({} frames)",
+                "Start {}   End {}   Length {}",
                 fmt_time(p.time_of(eff)),
                 fmt_time(p.time_of(l.end) + p.frame_duration()),
-                fmt_time(kept_frames as f64 * p.frame_duration()),
-                kept_frames
+                fmt_time(kept_frames as f64 * p.frame_duration())
             ));
             if mode == TrimMode::Fast && eff != l.start {
                 ui.label(dim(shared, "(start snapped back to a keyframe)"));
@@ -756,7 +753,7 @@ fn timeline(ui: &mut egui::Ui, l: &mut Loaded, colors: &crate::themes::Colors, m
     }
     if let Some(p) = resp.hover_pos() {
         let f = f_of(p.x);
-        resp.on_hover_text_at_pointer(format!("{}  (frame {})", fmt_time(l.probe.time_of(f)), f + 1));
+        resp.on_hover_text_at_pointer(fmt_time(l.probe.time_of(f)));
     }
 }
 

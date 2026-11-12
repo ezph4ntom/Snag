@@ -43,6 +43,10 @@ pub struct SettingsTab {
     /// Info shown after picking a key (e.g. "F9 no longer reaches other apps").
     capture_note: Option<String>,
     picking: Option<(Folder, Receiver<PathBuf>)>,
+    /// "Choose sound..." dialog in progress.
+    picking_sound: Option<Receiver<PathBuf>>,
+    /// Whether the current sound file can be played: (file, error).
+    sound_check: Option<(PathBuf, Option<String>)>,
     monitors: Option<Vec<crate::capture::MonitorInfo>>,
 }
 
@@ -361,10 +365,22 @@ impl SettingsTab {
 
     fn sound_section(&mut self, ui: &mut egui::Ui, shared: &mut Shared) {
         let mut snd = shared.settings.sound.clone();
-        let file = crate::paths::clip_sound_file();
-        let exists = file.is_file();
-        let warn = shared.theme.colors.warning.0;
+        if let Some(rx) = &self.picking_sound {
+            if let Ok(p) = rx.try_recv() {
+                snd.file = Some(p);
+                self.picking_sound = None;
+            }
+        }
+        let file = crate::sound::sound_path(snd.file.as_deref());
+        // Check the file once per choice (converting an MP3 takes a moment).
+        if self.sound_check.as_ref().is_none_or(|(p, _)| *p != file) {
+            let err = crate::sound::load(&file).err().map(|e| format!("{e:#}"));
+            self.sound_check = Some((file.clone(), err));
+        }
+        let error = self.sound_check.as_ref().and_then(|(_, e)| e.clone());
+        let error_color = shared.theme.colors.error.0;
         let mut test = false;
+        let mut choose = false;
         section(ui, shared, "Clip sound", |ui| {
             ui.checkbox(&mut snd.enabled, "Play a sound when a clip is saved");
             ui.add_enabled_ui(snd.enabled, |ui| {
@@ -377,20 +393,29 @@ impl SettingsTab {
                     }
                     test = ui.button("Test").clicked();
                 });
+                ui.horizontal_wrapped(|ui| {
+                    let name = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    ui.label("Sound");
+                    ui.label(RichText::new(name).strong()).on_hover_text(file.display().to_string());
+                    choose = ui.button("Choose sound...").clicked();
+                    if snd.file.is_some() && ui.button("Default").clicked() {
+                        snd.file = None;
+                    }
+                });
             });
-            ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new(format!("Sound file: {}", file.display())).small());
-                if ui.small_button("Show").clicked() {
-                    crate::win::reveal_in_explorer(if exists { &file } else { file.parent().unwrap_or(&file) });
-                }
-            });
-            ui.label(RichText::new("Replace clip.wav with any WAV file to use your own sound.").small());
-            if !exists {
-                ui.label(RichText::new("clip.wav not found; the built-in sound is used.").color(warn).small());
+            ui.label(RichText::new("WAV, MP3, OGG, FLAC or M4A (the first 10 s are played).").small());
+            if let Some(e) = &error {
+                ui.label(RichText::new(format!("This sound can't be played, so the built-in one is used: {e}")).color(error_color).small());
             }
         });
+        if choose {
+            self.picking_sound = Some(super::dialogs::pick_sound(file.parent().unwrap_or(&file)));
+        }
+        if self.picking_sound.is_some() {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+        }
         if test {
-            crate::sound::play_clip_sound(snd.volume);
+            crate::sound::play_clip_sound(snd.file.as_deref(), snd.volume);
         }
         if snd != shared.settings.sound {
             shared.settings.sound = snd;

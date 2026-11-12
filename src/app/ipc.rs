@@ -76,6 +76,9 @@ pub enum UiToCore {
     RestartAsAdmin,
     /// Start/stop sending live preview frames (Live tab shown or not).
     Preview { on: bool },
+    /// The Sound choices while a fader is dragged: applied to the recording
+    /// right away (settings.json is saved once the drag ends).
+    LiveAudio { audio: crate::config::AudioSettings },
 }
 
 /// How hotkey registration went, for the Settings tab and the log.

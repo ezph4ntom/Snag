@@ -82,6 +82,21 @@ pub struct MixSource {
     /// Per-app capture works on this PC (`None` = not tried yet).
     per_app_ok: Option<bool>,
     scratch: Vec<AudioPacket>,
+    /// The choices of the last full refresh with every volume zeroed: if a
+    /// change leaves this the same, only volumes moved (a fader is being
+    /// dragged) and they're applied without re-scanning devices.
+    structure: Option<AudioSettings>,
+    /// Exe of each per-app source ("pid:123" -> "spotify.exe").
+    app_of_key: HashMap<String, String>,
+}
+
+/// `s` without its volumes (see `MixSource::structure`).
+fn structure_of(s: &AudioSettings) -> AudioSettings {
+    let mut t = s.clone();
+    t.mic_volume = 0.0;
+    t.apps.iter_mut().for_each(|a| a.volume = 0.0);
+    t.devices.iter_mut().for_each(|d| d.volume = 0.0);
+    t
 }
 
 // SAFETY: created and used on the recorder's audio thread only.
@@ -97,6 +112,30 @@ impl MixSource {
             last_refresh: None,
             per_app_ok: None,
             scratch: Vec::new(),
+            structure: None,
+            app_of_key: HashMap::new(),
+        }
+    }
+
+    /// The volume for source `key` under the choices `s`.
+    fn gain_for(&self, key: &str, s: &AudioSettings) -> f32 {
+        if key.starts_with("mic:") {
+            s.mic_volume
+        } else if let Some(id) = key.strip_prefix("dev:") {
+            if s.whole_pc { s.devices.iter().find(|d| d.id == id).map(|d| d.volume).unwrap_or(1.0) } else { 1.0 }
+        } else {
+            let exe = self.app_of_key.get(key);
+            s.apps.iter().find(|a| Some(&a.exe) == exe).map(|a| a.volume).unwrap_or(1.0)
+        }
+    }
+
+    /// Only volumes changed: apply them, keep everything else.
+    fn update_gains(&mut self) {
+        let (version, s) = self.selection.get();
+        self.seen_version = version;
+        let gains: Vec<f32> = self.children.iter().map(|c| self.gain_for(&c.key, &s)).collect();
+        for (c, g) in self.children.iter_mut().zip(gains) {
+            c.gain = g;
         }
     }
 
@@ -141,6 +180,7 @@ impl MixSource {
             let Some(path) = crate::win::process_exe_path(sess.pid) else { continue };
             let key = devices::exe_key(&path);
             if let Some(&gain) = ticked.get(&key) {
+                self.app_of_key.insert(format!("pid:{}", sess.pid), key.clone());
                 if !pids.iter().any(|p| p.0 == sess.pid) {
                     pids.push((sess.pid, devices::app_display_name(&path), gain, sess.device_id.clone()));
                 }
@@ -177,6 +217,7 @@ impl MixSource {
         let (version, s) = self.selection.get();
         self.seen_version = version;
         self.last_refresh = Some(Instant::now());
+        self.structure = Some(structure_of(&s));
         let (mut wanted, mut note) = self.wanted(&s);
 
         // Drop sources no longer wanted (or whose app quit).
@@ -254,6 +295,13 @@ impl MixSource {
 
 impl AudioSource for MixSource {
     fn poll(&mut self, out: &mut Vec<AudioPacket>, start: u64, now: u64) {
+        let changed = self.selection.version.load(Ordering::Relaxed) != self.seen_version;
+        if changed && self.structure.is_some() {
+            let (_, s) = self.selection.get();
+            if self.structure.as_ref() == Some(&structure_of(&s)) {
+                self.update_gains(); // just a fader moving: no re-scan
+            }
+        }
         let changed = self.selection.version.load(Ordering::Relaxed) != self.seen_version;
         // Every 2 s: apps start and quit, devices come and go.
         if changed || self.last_refresh.is_none_or(|t| t.elapsed() >= Duration::from_secs(2)) {

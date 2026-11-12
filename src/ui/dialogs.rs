@@ -14,7 +14,15 @@ use windows::Win32::UI::Shell::{
 };
 use windows::core::{HSTRING, w};
 
-fn show(initial: &Path, folders: bool) -> Option<PathBuf> {
+#[derive(Clone, Copy)]
+enum Kind {
+    Folder,
+    Video,
+    Audio,
+}
+
+fn show(initial: &Path, kind: Kind) -> Option<PathBuf> {
+    let folders = matches!(kind, Kind::Folder);
     // SAFETY: standard COM usage on a fresh thread with its own apartment.
     unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
@@ -24,10 +32,14 @@ fn show(initial: &Path, folders: bool) -> Option<PathBuf> {
             if folders {
                 opts |= FOS_PICKFOLDERS;
             } else {
-                dialog.SetFileTypes(&[
-                    COMDLG_FILTERSPEC { pszName: w!("Videos"), pszSpec: w!("*.mp4;*.mkv;*.mov;*.m4v") },
-                    COMDLG_FILTERSPEC { pszName: w!("All files"), pszSpec: w!("*.*") },
-                ])?;
+                let first = match kind {
+                    Kind::Audio => COMDLG_FILTERSPEC {
+                        pszName: w!("Sounds"),
+                        pszSpec: w!("*.wav;*.mp3;*.ogg;*.flac;*.m4a;*.aac;*.opus;*.wma"),
+                    },
+                    _ => COMDLG_FILTERSPEC { pszName: w!("Videos"), pszSpec: w!("*.mp4;*.mkv;*.mov;*.m4v") },
+                };
+                dialog.SetFileTypes(&[first, COMDLG_FILTERSPEC { pszName: w!("All files"), pszSpec: w!("*.*") }])?;
             }
             dialog.SetOptions(opts)?;
             if initial.is_dir() {
@@ -50,18 +62,22 @@ fn show(initial: &Path, folders: bool) -> Option<PathBuf> {
 /// Opens a folder picker; the result arrives on the returned channel
 /// (nothing is sent if the user cancels).
 pub fn pick_folder(initial: &Path) -> Receiver<PathBuf> {
-    spawn(initial, true)
+    spawn(initial, Kind::Folder)
 }
 
 pub fn pick_video(initial: &Path) -> Receiver<PathBuf> {
-    spawn(initial, false)
+    spawn(initial, Kind::Video)
 }
 
-fn spawn(initial: &Path, folders: bool) -> Receiver<PathBuf> {
+pub fn pick_sound(initial: &Path) -> Receiver<PathBuf> {
+    spawn(initial, Kind::Audio)
+}
+
+fn spawn(initial: &Path, kind: Kind) -> Receiver<PathBuf> {
     let (tx, rx) = channel();
     let initial = initial.to_path_buf();
     std::thread::spawn(move || {
-        if let Some(p) = show(&initial, folders) {
+        if let Some(p) = show(&initial, kind) {
             let _ = tx.send(p);
         }
     });

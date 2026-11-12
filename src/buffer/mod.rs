@@ -264,6 +264,24 @@ fn set_thread_priority(highest: bool) {
     }
 }
 
+/// Keeps COM's multithreaded apartment alive for the rest of the process.
+///
+/// The `windows` crate caches WinRT factories (like the screen-capture
+/// API's) process-wide. When the last thread in the apartment exits (e.g.
+/// when the replay buffer restarts after a settings change), Windows can
+/// unload those libraries, and the next recording would call into freed
+/// memory and crash. One extra usage reference prevents that.
+pub fn keep_mta_alive() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        // SAFETY: plain COM call; the cookie is intentionally never released.
+        match unsafe { windows::Win32::System::Com::CoIncrementMTAUsage() } {
+            Ok(_cookie) => {}
+            Err(e) => log::warn!("CoIncrementMTAUsage failed: {e}"),
+        }
+    });
+}
+
 fn pacer_main(
     cfg: &RecorderConfig,
     session: &Arc<Session>,
@@ -271,6 +289,7 @@ fn pacer_main(
     make_audio: Option<AudioSourceFactory>,
     cmd_rx: Receiver<Command>,
 ) -> Result<()> {
+    keep_mta_alive();
     // WinRT (capture API) wants the thread in the multithreaded apartment.
     // SAFETY: plain initialization call; "already initialized" is fine.
     unsafe {
