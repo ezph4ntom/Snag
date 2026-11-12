@@ -1,6 +1,7 @@
 //! JSON themes from the `themes/` folder. See `themes/README.md` for the
 //! schema. Every field is optional; anything missing falls back to the
-//! built-in dark theme, so a theme file can be as small as `{"colors":{"accent":"#ff0080"}}`.
+//! built-in Daylight theme, so a theme file can be as small as
+//! `{"colors":{"accent":"#ff0080"}}`.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -75,29 +76,33 @@ pub struct Colors {
     /// handles. Optional; defaults to `widget`. Needed when `widget` is the
     /// same as the background (e.g. pure black), or those parts vanish.
     pub control: Option<Hex>,
+    /// Behind the live preview and clip thumbnails (dark in every theme, so
+    /// the picture's colors read true).
+    pub preview: Hex,
 }
 
 impl Default for Colors {
-    /// Snag Dark (Ember): the brand's ink palette with the Ember accent.
+    /// Daylight: warm off-white, white cards, ink text, Ember-red accent.
     fn default() -> Self {
         Colors {
-            background: Hex::rgb(0x0e, 0x11, 0x16),
-            panel: Hex::rgb(0x14, 0x18, 0x20),
-            text: Hex::rgb(0xf2, 0xf4, 0xf8),
-            text_dim: Hex::rgb(0x9a, 0xa3, 0xb2),
-            accent: Hex::rgb(0xf0, 0x4a, 0x24),
-            accent_text: Hex::rgb(0x0e, 0x11, 0x16),
-            widget: Hex::rgb(0x1c, 0x22, 0x2b),
-            widget_hover: Hex::rgb(0x25, 0x2c, 0x37),
-            widget_active: Hex::rgb(0x2f, 0x37, 0x43),
-            border: Hex::rgb(0x2a, 0x31, 0x3c),
-            success: Hex::rgb(0x34, 0xd3, 0x99),
-            warning: Hex::rgb(0xfb, 0xbf, 0x24),
-            error: Hex::rgb(0xff, 0x6b, 0x81),
-            timeline: Hex::rgb(0x1a, 0x1f, 0x27),
-            timeline_selection: Hex(Color32::from_rgba_unmultiplied(0xf0, 0x4a, 0x24, 0x59)),
-            playhead: Hex::rgb(0xf2, 0xf4, 0xf8),
-            control: None,
+            background: Hex::rgb(0xf4, 0xf3, 0xf0),
+            panel: Hex::rgb(0xff, 0xff, 0xff),
+            text: Hex::rgb(0x1b, 0x1c, 0x1f),
+            text_dim: Hex::rgb(0x5d, 0x60, 0x68),
+            accent: Hex::rgb(0xd9, 0x44, 0x1f),
+            accent_text: Hex::rgb(0xff, 0xff, 0xff),
+            widget: Hex::rgb(0xff, 0xff, 0xff),
+            widget_hover: Hex::rgb(0xf2, 0xf1, 0xed),
+            widget_active: Hex::rgb(0xe8, 0xe6, 0xe1),
+            border: Hex::rgb(0xe2, 0xe0, 0xda),
+            success: Hex::rgb(0x1f, 0x8a, 0x5b),
+            warning: Hex::rgb(0xb7, 0x79, 0x1f),
+            error: Hex::rgb(0xc6, 0x28, 0x28),
+            timeline: Hex::rgb(0xe8, 0xe6, 0xe1),
+            timeline_selection: Hex(Color32::from_rgba_unmultiplied(0xd9, 0x44, 0x1f, 0x40)),
+            playhead: Hex::rgb(0x1b, 0x1c, 0x1f),
+            control: Some(Hex::rgb(0xe8, 0xe6, 0xe1)),
+            preview: Hex::rgb(0x1b, 0x1c, 0x1f),
         }
     }
 }
@@ -122,7 +127,7 @@ impl Default for Fonts {
             body: 14.0,
             heading: 20.0,
             button: 14.0,
-            small: 11.5,
+            small: 12.0,
             mono: 13.0,
             family: None,
         }
@@ -145,7 +150,7 @@ impl Default for Spacing {
     fn default() -> Self {
         Spacing {
             item: [8.0, 6.0],
-            button_padding: [10.0, 5.0],
+            button_padding: [14.0, 7.0],
             window_margin: 12.0,
             indent: 18.0,
         }
@@ -168,11 +173,11 @@ pub struct Theme {
 impl Default for Theme {
     fn default() -> Self {
         Theme {
-            name: "Snag Dark (built-in)".into(),
-            dark: true,
+            name: "Daylight (built-in)".into(),
+            dark: false,
             colors: Colors::default(),
             fonts: Fonts::default(),
-            corner_radius: 6.0,
+            corner_radius: 8.0,
             spacing: Spacing::default(),
         }
     }
@@ -212,6 +217,15 @@ pub fn path_of(id: &str) -> PathBuf {
 pub fn load_file(path: &Path) -> Result<Theme> {
     let text = crate::config::read_json_text(path).with_context(|| format!("reading {}", path.display()))?;
     serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+}
+
+/// The theme new users get (and anyone whose theme file is gone).
+pub const DEFAULT_ID: &str = "daylight";
+
+/// `id` if that theme exists, else the default one (themes were renamed in
+/// v0.5: "dark", "tide"... are gone).
+pub fn existing_or_default(id: &str) -> String {
+    if path_of(id).is_file() { id.to_string() } else { DEFAULT_ID.to_string() }
 }
 
 /// Loads a theme by id, falling back to the built-in theme on error.
@@ -324,28 +338,28 @@ pub fn apply(ctx: &egui::Context, theme: &Theme, fonts_changed: bool) {
     }
 }
 
-/// Space Grotesk, the brand typeface (SIL Open Font License, see
-/// assets/fonts/SpaceGrotesk-OFL.txt). Built into the exe so the UI always
-/// has it: Medium for all text, Bold for headings and the wordmark.
-static SPACE_GROTESK_MEDIUM: &[u8] = include_bytes!("../../assets/fonts/SpaceGrotesk-Medium.ttf");
-static SPACE_GROTESK_BOLD: &[u8] = include_bytes!("../../assets/fonts/SpaceGrotesk-Bold.ttf");
+/// DM Sans, the UI typeface (SIL Open Font License, see
+/// assets/fonts/DMSans-OFL.txt). Built into the exe so the UI always has
+/// it: Medium for all text, Bold for headings and the wordmark.
+static DM_SANS_MEDIUM: &[u8] = include_bytes!("../../assets/fonts/DMSans-Medium.ttf");
+static DM_SANS_BOLD: &[u8] = include_bytes!("../../assets/fonts/DMSans-Bold.ttf");
 
 /// Font family for headings and the "snag" wordmark.
 pub fn brand_bold_family() -> FontFamily {
     FontFamily::Name("brand-bold".into())
 }
 
-/// egui's default fonts with Space Grotesk in front. egui's own fonts stay
-/// behind it as fallbacks for symbols Space Grotesk doesn't have.
+/// egui's default fonts with DM Sans in front. egui's own fonts stay behind
+/// it as fallbacks for symbols DM Sans doesn't have.
 fn brand_fonts() -> FontDefinitions {
     let mut defs = FontDefinitions::default();
-    defs.font_data.insert("space-grotesk".into(), Arc::new(FontData::from_static(SPACE_GROTESK_MEDIUM)));
-    defs.font_data.insert("space-grotesk-bold".into(), Arc::new(FontData::from_static(SPACE_GROTESK_BOLD)));
+    defs.font_data.insert("dm-sans".into(), Arc::new(FontData::from_static(DM_SANS_MEDIUM)));
+    defs.font_data.insert("dm-sans-bold".into(), Arc::new(FontData::from_static(DM_SANS_BOLD)));
     let fallbacks = defs.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
     if let Some(list) = defs.families.get_mut(&FontFamily::Proportional) {
-        list.insert(0, "space-grotesk".into());
+        list.insert(0, "dm-sans".into());
     }
-    let mut bold = vec!["space-grotesk-bold".to_string()];
+    let mut bold = vec!["dm-sans-bold".to_string()];
     bold.extend(fallbacks);
     defs.families.insert(brand_bold_family(), bold);
     defs

@@ -14,6 +14,7 @@ mod quality_tab;
 mod settings_tab;
 mod sound_tab;
 mod trimmer_tab;
+mod widgets;
 
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
@@ -149,13 +150,24 @@ struct App {
     tab_bar_size: egui::Vec2,
     /// The area below the title bar last frame.
     content_rect: egui::Rect,
+    /// The latest note from the core and when it appeared (shown briefly
+    /// as a toast in the corner).
+    toast: Option<(String, Instant)>,
 }
 
 pub fn run(args: UiArgs) -> Result<()> {
     crate::logging::init("ui");
     crate::paths::migrate_from_clipapp();
-    let (settings, _) = Settings::load();
-    let tab = Tab::parse(args.tab.as_deref().unwrap_or("clips"));
+    let (mut settings, _) = Settings::load();
+    let tab = Tab::parse(args.tab.as_deref().unwrap_or("live"));
+    // Themes were renamed (v0.5): a theme that no longer exists becomes the
+    // default, Daylight.
+    let theme_now = crate::themes::existing_or_default(&settings.theme);
+    if theme_now != settings.theme {
+        log::info!("theme {:?} doesn't exist any more; using {theme_now}", settings.theme);
+        settings.theme = theme_now;
+        let _ = settings.save();
+    }
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Snag")
@@ -244,6 +256,7 @@ pub fn run(args: UiArgs) -> Result<()> {
                 tab_bar_size: egui::vec2(160.0, 44.0),
                 bar_open: false,
                 content_rect: egui::Rect::NOTHING,
+                toast: None,
             }))
         }),
     )
@@ -299,7 +312,13 @@ impl App {
             self.connected = true;
             self.shared.connected = true;
             match msg {
-                CoreToUi::Status(s) => self.shared.status = Some(s),
+                CoreToUi::Status(s) => {
+                    let old = self.shared.status.as_ref().map(|o| o.note.clone()).unwrap_or_default();
+                    if !s.note.is_empty() && s.note != old {
+                        self.toast = Some((s.note.clone(), Instant::now()));
+                    }
+                    self.shared.status = Some(s);
+                }
                 CoreToUi::HotkeyCaptured { target, hotkey } => self.shared.captured_hotkey = Some((target, hotkey)),
                 CoreToUi::Show { tab, clip, activate } => {
                     self.tab = Tab::parse(&tab);
@@ -383,13 +402,18 @@ impl App {
 
     /// The tab bar on whichever edge it's docked to. Drag its grip (or any
     /// empty part of it) to another edge to move it there.
-    fn tab_bar(&mut self, ui: &mut egui::Ui, vertical: bool) {
+    fn tab_bar(&mut self, ui: &mut egui::Ui, vertical: bool, inline: bool) {
         let c = self.shared.theme.colors.clone();
         let icons = self.shared.settings.ui.icon_tabs;
         let bar = ui.max_rect();
-        let bg = ui.interact(bar, egui::Id::unique("tabbar-bg"), egui::Sense::drag());
-        let mut dragging = bg.dragged();
-        let mut released = bg.drag_stopped();
+        // In the title bar, empty space moves the window; elsewhere it drags
+        // the tab bar to another edge.
+        let (mut dragging, mut released) = (false, false);
+        if !inline {
+            let bg = ui.interact(bar, egui::Id::unique("tabbar-bg"), egui::Sense::drag());
+            dragging = bg.dragged();
+            released = bg.drag_stopped();
+        }
 
         let layout = if vertical {
             egui::Layout::top_down(egui::Align::Center)
@@ -421,11 +445,25 @@ impl App {
                         }
                     }
                     resp
-                } else {
-                    let mut b = egui::Button::new(RichText::new(tab.label()).color(fg)).fill(fill);
-                    if vertical {
-                        b = b.min_size(egui::vec2(ui.available_width(), 30.0));
+                } else if !vertical {
+                    // Top/bottom: plain text tabs, the current one underlined.
+                    let font = egui::FontId::proportional(self.shared.theme.fonts.body + 0.5);
+                    let galley = ui.painter().layout_no_wrap(tab.label().to_string(), font, c.text.0);
+                    let h = ui.available_height().clamp(30.0, 52.0);
+                    let (rect, resp) = ui.allocate_exact_size(egui::vec2(galley.size().x + 22.0, h), egui::Sense::click());
+                    let color = if selected || resp.hovered() { c.text.0 } else { c.text_dim.0 };
+                    let pos = egui::pos2(rect.center().x - galley.size().x / 2.0, rect.center().y - galley.size().y / 2.0);
+                    ui.painter().galley(pos, galley, color);
+                    if selected {
+                        let y = if self.shared.settings.ui.tab_dock == crate::config::TabDock::Bottom { rect.top() + 1.0 } else { rect.bottom() - 1.0 };
+                        let line = egui::Rect::from_center_size(egui::pos2(rect.center().x, y), egui::vec2(rect.width() - 14.0, 2.5));
+                        ui.painter().rect_filled(line, 1.0, c.accent.0);
                     }
+                    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+                } else {
+                    let b = egui::Button::new(RichText::new(tab.label()).color(fg))
+                        .fill(fill)
+                        .min_size(egui::vec2(ui.available_width(), 34.0));
                     ui.add(b)
                 };
                 if resp.clicked() {
@@ -536,62 +574,55 @@ impl App {
         painter.rect_stroke(rect.shrink(1.0), 6.0, egui::Stroke::new(2.0, c.accent.0), egui::StrokeKind::Inside);
     }
 
-    fn status_bar(&mut self, ui: &mut egui::Ui) {
-        let c = self.shared.theme.colors.clone();
-        let Some(s) = self.shared.status.clone().filter(|_| self.connected) else {
-            ui.horizontal(|ui| {
-                status_dot(ui, c.text_dim.0);
-                ui.label(RichText::new("Not connected to the Snag tray process (start snag.exe to record)").color(c.text_dim.0));
-            });
+    /// The status badge in the title bar: recording / buffer state.
+    fn status_badge(ui: &mut egui::Ui, theme: &crate::themes::Theme, status: Option<&CoreStatus>) {
+        let c = &theme.colors;
+        let Some(s) = status else {
+            widgets::status_pill(ui, theme, c.text_dim.0, "Not running", None)
+                .on_hover_text("The Snag tray app isn't running, so nothing is recorded. Start snag.exe.");
             return;
         };
-        // Buttons first (right-aligned), so the text gets the remaining width
-        // and is shortened with "..." instead of running under the buttons.
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let label = if s.recording { "Stop buffer" } else { "Start buffer" };
-            if ui.button(label).clicked() {
-                self.shared.outbox.push(UiToCore::ToggleBuffer);
-            }
-            if ui.add_enabled(s.recording, egui::Button::new("Save clip now")).clicked() {
-                self.shared.outbox.push(UiToCore::SaveClip);
-            }
-            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                // The recording dot is the logo's dot: the theme accent.
-                let color = if s.recording && s.state == "Recording" {
-                    c.accent.0
-                } else if s.recording {
-                    c.warning.0
-                } else {
-                    c.text_dim.0
-                };
-                status_dot(ui, color);
-                ui.label(&s.state);
-                if s.recording && s.frames_dropped > 0 {
-                    ui.label(RichText::new(format!("{} dropped", s.frames_dropped)).color(c.warning.0))
-                        .on_hover_text("Frames the recorder couldn't produce on time (filled with repeats; see core.log)");
-                }
-                let mut text = String::new();
-                if s.recording {
-                    text = format!(
-                        "{} · {} @ {} fps{} · {} · {:.0} s buffered",
-                        s.encoder,
-                        s.resolution,
-                        s.fps,
-                        if s.audio { " + audio" } else { "" },
-                        s.monitor,
-                        s.buffered_seconds
-                    );
-                }
-                if !s.note.is_empty() {
-                    if !text.is_empty() {
-                        text.push_str("   |   ");
-                    }
-                    text.push_str(&s.note);
-                }
-                let col = if s.note.contains("fail") || s.note.contains("rror") { c.error.0 } else { c.text_dim.0 };
-                ui.add(egui::Label::new(RichText::new(text).color(col)).truncate());
-            });
-        });
+        let red = c.error.0;
+        if s.rec_active {
+            let what = if s.rec_session_mode { "Session" } else { "REC" };
+            widgets::status_pill(ui, theme, red, &format!("{what} {}", widgets::fmt_duration(s.rec_seconds)), Some(red))
+                .on_hover_text(format!("{} recorded so far", widgets::fmt_bytes(s.rec_bytes)));
+        } else if s.recording && s.state == "Recording" {
+            widgets::status_pill(ui, theme, c.success.0, &format!("Replay buffer · {:.0} s", s.buffered_seconds), None);
+        } else if s.recording {
+            widgets::status_pill(ui, theme, c.warning.0, "Starting...", None);
+        } else {
+            widgets::status_pill(ui, theme, c.text_dim.0, "Buffer off", None);
+        }
+        if s.rec_saving {
+            ui.spinner().on_hover_text("Saving a recording...");
+        }
+    }
+
+    /// The latest note ("Saved Clip_...", errors) for a few seconds, bottom
+    /// right.
+    fn draw_toast(&mut self, ctx: &egui::Context) {
+        let Some((text, since)) = &self.toast else { return };
+        let is_error = text.contains("fail") || text.contains("rror") || text.contains("Could not");
+        let life = if is_error { 9.0 } else { 4.5 };
+        let age = since.elapsed().as_secs_f32();
+        if age > life {
+            self.toast = None;
+            return;
+        }
+        ctx.request_repaint_after(Duration::from_millis(250));
+        let c = &self.shared.theme.colors;
+        let screen = ctx.content_rect();
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("toast")));
+        let color = if is_error { c.error.0 } else { c.text.0 };
+        let galley = painter.layout(text.clone(), egui::FontId::proportional(self.shared.theme.fonts.body), color, 420.0);
+        let size = galley.size() + egui::vec2(28.0, 20.0);
+        // Top right, just under the title bar (never over the buttons).
+        let rect = egui::Rect::from_min_size(egui::pos2(screen.right() - size.x - 18.0, screen.top() + chrome::TITLE_H + 12.0), size);
+        painter.rect_filled(rect.translate(egui::vec2(0.0, 2.0)), 10.0, Color32::from_black_alpha(30));
+        painter.rect_filled(rect, 10.0, c.panel.0);
+        painter.rect_stroke(rect, 10.0, egui::Stroke::new(1.0, if is_error { c.error.0 } else { c.border.0 }), egui::StrokeKind::Inside);
+        painter.galley(rect.min + egui::vec2(14.0, 10.0), galley, color);
     }
 }
 
@@ -627,13 +658,14 @@ impl eframe::App for App {
         }
         // Preview frames only while the Live tab is on screen.
         let minimized = ctx.input(|i| i.viewport().minimized.unwrap_or(false));
-        let want_preview = self.tab == Tab::Live && !minimized && self.connected;
+        let want_preview = self.tab == Tab::Live && self.shared.settings.ui.live_preview && !minimized && self.connected;
         if want_preview != self.preview_on {
             self.preview_on = want_preview;
             self.shared.outbox.push(UiToCore::Preview { on: want_preview });
             self.flush_outbox();
         }
-        self.sound.set_visible(self.tab == Tab::Sound && !minimized, ctx);
+        // Sound levels for the Sound tab and the Live tab's "Sound in clips".
+        self.sound.set_visible(matches!(self.tab, Tab::Sound | Tab::Live) && !minimized, ctx);
         // Wake up for debounced saves and the theme/clip-list checks.
         ctx.request_repaint_after(Duration::from_millis(if self.shared.dirty_at.is_some() { 100 } else { 1000 }));
     }
@@ -647,50 +679,77 @@ impl eframe::App for App {
         let border = egui::Stroke::new(1.0, colors.border.0);
 
         let logo = self.logo(&ctx);
-        egui::Panel::top("title")
-            .exact_size(chrome::TITLE_H)
-            .frame(egui::Frame::new().fill(panel))
-            .show_separator_line(false)
-            .show(ui, |ui| chrome::title_bar(ui, &colors, logo.as_ref()));
-        self.content_rect = ui.available_rect_before_wrap();
-
         let dock = self.shared.settings.ui.tab_dock;
         let icons = self.shared.settings.ui.icon_tabs;
+        let theme = self.shared.theme.clone();
+        let status = self.shared.status.clone().filter(|_| self.connected);
+        egui::Panel::top("title")
+            .exact_size(chrome::TITLE_H)
+            .frame(egui::Frame::new().fill(panel).stroke(egui::Stroke::NONE))
+            .show_separator_line(false)
+            .show(ui, |ui| {
+                let rect = ui.max_rect();
+                chrome::title_bar(
+                    ui,
+                    &colors,
+                    logo.as_ref(),
+                    |ui| {
+                        if dock == TabDock::Top {
+                            self.tab_bar(ui, false, true);
+                        }
+                    },
+                    |ui| Self::status_badge(ui, &theme, status.as_ref()),
+                );
+                ui.painter().line_segment([rect.left_bottom(), rect.right_bottom()], border);
+            });
+        self.content_rect = ui.available_rect_before_wrap();
+
         let bar_frame = egui::Frame::new().fill(panel).inner_margin(margin).stroke(egui::Stroke::NONE);
         let side_w = if icons { 56.0 } else { 172.0 };
         let r = match dock {
-            TabDock::Top => egui::Panel::top("tabs").frame(bar_frame).show(ui, |ui| self.tab_bar(ui, false)).response,
-            TabDock::Bottom => egui::Panel::bottom("tabs").frame(bar_frame).show(ui, |ui| self.tab_bar(ui, false)).response,
-            TabDock::Left => egui::Panel::left("tabs-v")
-                .resizable(false)
-                .exact_size(side_w)
-                .frame(bar_frame)
-                .show(ui, |ui| self.tab_bar(ui, true))
-                .response,
-            TabDock::Right => egui::Panel::right("tabs-v")
-                .resizable(false)
-                .exact_size(side_w)
-                .frame(bar_frame)
-                .show(ui, |ui| self.tab_bar(ui, true))
-                .response,
+            TabDock::Top => None,
+            TabDock::Bottom => Some(egui::Panel::bottom("tabs").frame(bar_frame).exact_size(46.0).show(ui, |ui| self.tab_bar(ui, false, false)).response),
+            TabDock::Left => Some(
+                egui::Panel::left("tabs-v")
+                    .resizable(false)
+                    .exact_size(side_w)
+                    .frame(bar_frame)
+                    .show(ui, |ui| self.tab_bar(ui, true, false))
+                    .response,
+            ),
+            TabDock::Right => Some(
+                egui::Panel::right("tabs-v")
+                    .resizable(false)
+                    .exact_size(side_w)
+                    .frame(bar_frame)
+                    .show(ui, |ui| self.tab_bar(ui, true, false))
+                    .response,
+            ),
         };
-        self.tab_bar_size = r.rect.size();
-        egui::Panel::bottom("status")
-            .frame(egui::Frame::new().fill(panel).inner_margin(margin))
-            .show(ui, |ui| self.status_bar(ui));
+        self.tab_bar_size = r.map(|r| r.rect.size()).unwrap_or(egui::vec2(600.0, 52.0));
         let bg = colors.background.0;
-        let m = self.shared.theme.spacing.window_margin.clamp(0.0, 127.0) as i8;
+        let m = self.shared.theme.spacing.window_margin.clamp(0.0, 127.0) as i8 + 6;
+        let mut open_clip = None;
         egui::CentralPanel::default_margins()
-            .frame(egui::Frame::new().fill(bg).inner_margin(egui::Margin::same(m)))
+            .frame(egui::Frame::new().fill(bg).inner_margin(egui::Margin::symmetric(m + 4, m)))
             .show(ui, |ui| match self.tab {
-                Tab::Live => self.live.ui(ui, &mut self.shared),
+                Tab::Live => open_clip = self.live.ui(ui, &mut self.shared, &mut self.sound),
                 Tab::Sound => self.sound.ui(ui, &mut self.shared),
                 Tab::Clips => self.trimmer.ui(ui, &mut self.shared),
                 Tab::Settings => self.settings_tab.ui(ui, &mut self.shared),
                 Tab::Quality => self.quality.ui(ui, &mut self.shared),
                 Tab::Appearance => self.appearance.ui(ui, &mut self.shared, self.theme_error.as_deref()),
             });
+        match open_clip {
+            Some(live_tab::LiveAction::OpenClip(path)) => {
+                self.trimmer.load(path);
+                self.tab = Tab::Clips;
+            }
+            Some(live_tab::LiveAction::ShowClips) => self.tab = Tab::Clips,
+            None => {}
+        }
         self.dock_preview(&ctx);
+        self.draw_toast(&ctx);
         // A 1 px outline around the whole window (no Windows frame anymore).
         let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
         if !maximized {
@@ -715,11 +774,6 @@ fn name_popup(ctx: &egui::Context, icon: egui::Rect, name: &str, t: f32, c: &cra
     painter.galley(rect.min + egui::vec2(7.0, 4.0), galley, c.text.0);
 }
 
-/// A small filled circle (recording indicator).
-fn status_dot(ui: &mut egui::Ui, color: Color32) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
-    ui.painter().circle_filled(rect.center(), 5.0, color);
-}
 
 /// Small helpers shared by the tabs.
 pub(crate) fn section(ui: &mut egui::Ui, shared: &Shared, title: &str, add: impl FnOnce(&mut egui::Ui)) {
@@ -727,15 +781,15 @@ pub(crate) fn section(ui: &mut egui::Ui, shared: &Shared, title: &str, add: impl
     egui::Frame::new()
         .fill(c.panel.0)
         .stroke(egui::Stroke::new(1.0, c.border.0))
-        .corner_radius(egui::CornerRadius::same(shared.theme.corner_radius.clamp(0.0, 255.0) as u8))
-        .inner_margin(egui::Margin::same(12))
+        .corner_radius(egui::CornerRadius::same((shared.theme.corner_radius * 1.5).clamp(0.0, 255.0) as u8))
+        .inner_margin(egui::Margin::same(18))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(RichText::new(title).strong().size(shared.theme.fonts.body + 2.0));
-            ui.add_space(4.0);
+            ui.label(RichText::new(title).family(crate::themes::brand_bold_family()).size(shared.theme.fonts.body + 2.0));
+            ui.add_space(8.0);
             add(ui);
         });
-    ui.add_space(10.0);
+    ui.add_space(14.0);
 }
 
 pub(crate) fn dim(shared: &Shared, text: impl Into<String>) -> RichText {

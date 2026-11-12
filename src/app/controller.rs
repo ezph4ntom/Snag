@@ -18,11 +18,12 @@ use super::{MainRequest, post_to_main};
 use crate::buffer::clip::{ClipResult, save_clip};
 use crate::buffer::source::{FrameSource, WgcSource};
 use crate::buffer::{Recorder, RecorderConfig, Session, SourceFactory};
-use crate::config::{AfterClip, CaptureMode, Settings};
+use crate::config::{AfterClip, CaptureMode, RecordMode, Settings};
 
 #[derive(Debug, Clone, Copy)]
 pub enum TrayAction {
     SaveClip,
+    Record,
     Screenshot,
     ToggleBuffer,
     OpenClipsFolder,
@@ -42,6 +43,8 @@ pub enum Event {
     /// The key press recorded for a hotkey being rebound (None = cancelled).
     HotkeyCaptured { target: String, hotkey: Option<String> },
     ClipDone(Result<ClipResult, String>),
+    /// A long recording was written to the clips folder (or failed).
+    RecordingDone(Result<ClipResult, String>),
     ScreenshotDone(Result<PathBuf, String>),
     FromUi(UiToCore),
     /// A second `snag.exe` was started: show the window (on this tab).
@@ -73,6 +76,13 @@ pub struct Controller {
     /// Debounced focus change: (monitor, when it was first seen).
     pending_switch: Option<(isize, Instant)>,
     hotkey_report: super::HotkeyReport,
+    /// The long recording in progress, if any.
+    recording: Option<crate::buffer::recording::Recording>,
+    /// A recording should be running (started in manual mode, or always in
+    /// whole-session mode); it (re)starts as soon as the buffer is ready.
+    want_recording: bool,
+    /// Recordings being written to the clips folder.
+    saving_recordings: u32,
     /// The Sound choices, shared live with the recorder's audio thread.
     audio_selection: std::sync::Arc<crate::audio::mixer::SharedSelection>,
     /// Shown while a program running as administrator is focused and a
@@ -121,6 +131,9 @@ impl Controller {
             focused_monitor: 0,
             pending_switch: None,
             hotkey_report: Default::default(),
+            recording: None,
+            want_recording: false,
+            saving_recordings: 0,
             audio_selection: crate::audio::mixer::SharedSelection::new(Default::default()),
             elevated_warning: None,
             elevated: crate::win::is_elevated(),
@@ -214,6 +227,15 @@ impl Controller {
         }
         self.focused_monitor = foreground_monitor();
         self.register_hotkeys();
+        // A recording left behind by a crash or power cut: save what it has.
+        let (events, out) = (self.events.clone(), self.settings.clips_dir.clone());
+        std::thread::spawn(move || {
+            for path in crate::buffer::recording::recover_leftovers(&out) {
+                let r = ClipResult { path, seconds: 0.0, segments: 0, bytes: 0, took: Duration::ZERO, warnings: Vec::new() };
+                let _ = events.send(Event::RecordingDone(Ok(r)));
+            }
+        });
+        self.want_recording = self.settings.recording.mode == RecordMode::WholeSession;
         if self.settings.start_buffer_on_launch {
             self.start_buffer();
         }
@@ -232,9 +254,36 @@ impl Controller {
             Event::Hotkey(crate::hotkeys::ID_SCREENSHOT)
             | Event::Tray(TrayAction::Screenshot)
             | Event::FromUi(UiToCore::Screenshot) => self.screenshot(),
+            Event::Hotkey(crate::hotkeys::ID_RECORD) | Event::Tray(TrayAction::Record) | Event::FromUi(UiToCore::Record) => {
+                self.record_button()
+            }
             Event::Hotkey(_) => {}
+            Event::RecordingDone(result) => {
+                self.saving_recordings = self.saving_recordings.saturating_sub(1);
+                match result {
+                    Ok(r) => {
+                        log::info!("recording saved: {} ({:.0} s, {:.1} MB, {} ms)", r.path.display(), r.seconds, r.bytes as f64 / 1e6, r.took.as_millis());
+                        if self.settings.sound.enabled {
+                            crate::sound::play_clip_sound(self.settings.sound.file.as_deref(), self.settings.sound.volume);
+                        }
+                        self.note = format!("Saved {} ({})", r.path.file_name().unwrap_or_default().to_string_lossy(), fmt_duration(r.seconds));
+                        self.last_clip = Some(r.path);
+                    }
+                    Err(e) if e.contains("discarded") => {}
+                    Err(e) => {
+                        log::error!("saving recording failed: {e}");
+                        self.note = format!("Recording failed: {e}");
+                        error_beep();
+                    }
+                }
+                self.update_tray();
+            }
             Event::Tray(TrayAction::ToggleBuffer) | Event::FromUi(UiToCore::ToggleBuffer) => {
                 if self.recorder.is_some() {
+                    // Stopping the buffer also ends a manual recording (saved).
+                    if self.settings.recording.mode == RecordMode::Manual {
+                        self.want_recording = false;
+                    }
                     self.stop_buffer();
                     self.note = "Replay buffer stopped".into();
                 } else {
@@ -336,6 +385,7 @@ impl Controller {
 
     /// Runs after every event and at least twice a second.
     fn housekeeping(&mut self) {
+        self.keep_recording_in_step();
         // Nobody pressed anything for the new hotkey: give up.
         if self.capture_started.is_some_and(|t| t.elapsed() > Duration::from_secs(20)) {
             self.capture_started = None;
@@ -404,6 +454,16 @@ impl Controller {
 
     fn shutdown(&mut self) {
         log::info!("quitting");
+        // A manual recording is saved before quitting; unsaved whole-session
+        // footage is discarded (that's what the mode promises).
+        if let Some(rec) = self.recording.take() {
+            let discard = self.settings.recording.mode == RecordMode::WholeSession;
+            let job = rec.stop(&self.settings.clips_dir, discard);
+            match job() {
+                Ok(r) => log::info!("recording saved on quit: {}", r.path.display()),
+                Err(e) => log::info!("recording on quit: {e:#}"),
+            }
+        }
         self.stop_buffer();
         if let Some(mut ui) = self.ui.take() {
             let _ = ui.child.kill();
@@ -515,6 +575,87 @@ impl Controller {
         });
     }
 
+    // ---- long recordings ---------------------------------------------------
+
+    /// The record button/hotkey. Manual mode: start or stop (stop saves).
+    /// Whole-session mode: save everything recorded so far.
+    fn record_button(&mut self) {
+        match self.settings.recording.mode {
+            RecordMode::Manual if self.want_recording => {
+                self.want_recording = false;
+                self.finish_recording(false);
+                self.note = "Saving the recording...".into();
+            }
+            RecordMode::Manual => {
+                self.want_recording = true;
+                if self.recorder.is_none() {
+                    self.restart_attempts = 0;
+                    self.start_buffer();
+                }
+                self.note = "Recording".into();
+                self.keep_recording_in_step();
+            }
+            RecordMode::WholeSession => match &self.recording {
+                Some(rec) => {
+                    let job = rec.snapshot_job(&self.settings.clips_dir);
+                    self.run_save_job(job);
+                    self.note = "Saving the session so far (recording continues)...".into();
+                }
+                None => {
+                    self.want_recording = true;
+                    if self.recorder.is_none() {
+                        self.start_buffer();
+                    }
+                    self.note = "Session recording starts with the replay buffer".into();
+                }
+            },
+        }
+        self.update_tray();
+    }
+
+    fn run_save_job(&mut self, job: impl FnOnce() -> Result<ClipResult> + Send + 'static) {
+        self.saving_recordings += 1;
+        let events = self.events.clone();
+        std::thread::Builder::new()
+            .name("save-recording".into())
+            .spawn(move || {
+                let _ = events.send(Event::RecordingDone(job().map_err(|e| format!("{e:#}"))));
+            })
+            .ok();
+    }
+
+    /// Stops the current recording and saves it (or discards it).
+    fn finish_recording(&mut self, discard: bool) {
+        if let Some(rec) = self.recording.take() {
+            let job = rec.stop(&self.settings.clips_dir, discard);
+            self.run_save_job(job);
+        }
+    }
+
+    /// Starts a recording once the buffer is running, and saves the current
+    /// one when its buffer went away (stopped, restarted for new settings,
+    /// or failed); a new one then starts with the new buffer.
+    fn keep_recording_in_step(&mut self) {
+        if self.recording.as_ref().is_some_and(|r| r.ended()) {
+            log::info!("the replay buffer stopped under a recording; saving it");
+            self.finish_recording(false);
+        }
+        if self.want_recording && self.recording.is_none() {
+            let session = self.recorder.as_ref().filter(|r| r.session.start_instant().is_some()).map(|r| r.session.clone());
+            if let Some(session) = session {
+                match crate::buffer::recording::Recording::start(session) {
+                    Ok(r) => self.recording = Some(r),
+                    Err(e) => {
+                        log::error!("could not start recording: {e:#}");
+                        self.note = format!("Could not start recording: {e:#}");
+                        self.want_recording = false;
+                    }
+                }
+                self.update_tray();
+            }
+        }
+    }
+
     // ---- focus tracking ----------------------------------------------------
 
     fn on_foreground(&mut self, monitor: isize, pid: u32, class: &str) {
@@ -582,6 +723,11 @@ impl Controller {
         if old.hotkeys != self.settings.hotkeys {
             self.register_hotkeys();
         }
+        if old.recording.mode != self.settings.recording.mode {
+            // Switching modes ends the current recording (saved).
+            self.finish_recording(false);
+            self.want_recording = self.settings.recording.mode == RecordMode::WholeSession;
+        }
         // Which apps/devices are recorded changes live; only turning audio
         // on/off or its bitrate needs a restart.
         self.audio_selection.set(self.settings.audio.clone());
@@ -606,6 +752,7 @@ impl Controller {
         post_to_main(MainRequest::RegisterHotkeys {
             clip: self.settings.hotkeys.clip.clone(),
             screenshot: self.settings.hotkeys.screenshot.clone(),
+            record: self.settings.hotkeys.record.clone(),
         });
     }
 
@@ -622,6 +769,14 @@ impl Controller {
             tooltip,
             clip_key: self.settings.hotkeys.clip.clone(),
             shot_key: self.settings.hotkeys.screenshot.clone(),
+            record_label: {
+                let key = &self.settings.hotkeys.record;
+                match (self.settings.recording.mode, self.recording.is_some()) {
+                    (RecordMode::Manual, true) => format!("Stop recording\t{key}"),
+                    (RecordMode::Manual, false) => format!("Start recording\t{key}"),
+                    (RecordMode::WholeSession, _) => format!("Save session so far\t{key}"),
+                }
+            },
         });
     }
 
@@ -636,6 +791,11 @@ impl Controller {
             hotkey_errors: self.hotkey_report.errors.clone(),
             hotkey_warning: self.elevated_warning.as_ref().map(|(_, t)| t.clone()),
             hook_only_hotkeys: !self.hotkey_report.hook_only.is_empty(),
+            rec_active: self.recording.is_some(),
+            rec_seconds: self.recording.as_ref().map(|r| r.seconds()).unwrap_or(0.0),
+            rec_bytes: self.recording.as_ref().map(|r| r.bytes()).unwrap_or(0),
+            rec_session_mode: self.settings.recording.mode == RecordMode::WholeSession,
+            rec_saving: self.saving_recordings > 0,
             elevated: self.elevated,
             ..Default::default()
         };
@@ -772,4 +932,10 @@ fn error_beep() {
             windows::Win32::UI::WindowsAndMessaging::MB_ICONHAND,
         );
     }
+}
+
+/// `1:02:03` / `4:05`.
+fn fmt_duration(seconds: f64) -> String {
+    let s = seconds.max(0.0) as u64;
+    if s >= 3600 { format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60) } else { format!("{}:{:02}", s / 60, s % 60) }
 }

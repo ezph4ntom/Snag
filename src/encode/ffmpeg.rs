@@ -283,7 +283,7 @@ impl FfmpegHlsEncoder {
         }
         cmd.creation_flags(CREATE_NO_WINDOW | priority)
             .current_dir(&cfg.segment_dir)
-            .args(["-hide_banner", "-loglevel", "warning", "-nostats"])
+            .args(["-hide_banner", "-loglevel", "warning", "-nostats", "-filter_threads", "1", "-filter_complex_threads", "1"])
             .args(&hw_args)
             .args(["-f", "rawvideo", "-pix_fmt", "nv12"])
             .args(["-video_size", &format!("{}x{}", cfg.width, cfg.height)])

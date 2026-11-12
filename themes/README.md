@@ -1,9 +1,9 @@
 # Themes
 
-Shipped: **Snag Dark** (`dark.json`, Ember accent, the default), **Snag
-Tide** and **Snag Dusk** (the brand's other two accents), **Snag Light**,
-**Snag OLED** (pure black for OLED screens: every surface is `#000000`,
-outlines and accents stay) and **Synthwave**.
+Shipped: **Daylight** (`daylight.json`, the default: warm off-white, white
+cards, Ember-red accent), **Graphite** (neutral dark greys, Ember accent),
+**Midnight** (deep navy, cyan accent), **Warm Ink** (warm black, cream text)
+and **OLED** (pure black for OLED screens; outlines and accents stay).
 
 Each `*.json` file in this folder is a theme. The file name (without
 `.json`) is the theme's id; `name` is what the Appearance tab shows.
@@ -27,7 +27,7 @@ dark theme, so this is a complete, valid theme:
 | `dark` | bool | Base palette for parts not listed here (scrollbars, shadows). |
 | `colors` | object | See below. Colors are `"#RRGGBB"` or `"#RRGGBBAA"` (alpha last). |
 | `fonts.body` / `heading` / `button` / `small` / `mono` | number | Font sizes in points. |
-| `fonts.family` | string or `null` | A `.ttf`/`.otf` file, relative to this folder (e.g. `"fonts/Inter.ttf"`). `null` = Snag's built-in Space Grotesk (Medium for text, Bold for headings). |
+| `fonts.family` | string or `null` | A `.ttf`/`.otf` file, relative to this folder (e.g. `"fonts/Inter.ttf"`). `null` = Snag's built-in DM Sans (Medium for text, Bold for headings). |
 | `corner_radius` | number | Widget corner radius in points (windows use 1.5x). 0 = square. |
 | `spacing.item` | `[x, y]` | Gap between widgets. |
 | `spacing.button_padding` | `[x, y]` | Padding inside buttons. |
@@ -48,6 +48,7 @@ dark theme, so this is a complete, valid theme:
 | `timeline` | Trimmer track |
 | `timeline_selection` | Kept region between the trim handles (use some transparency) |
 | `playhead` | Trimmer playhead line |
+| `preview` | Behind the live preview and clip thumbnails (keep it dark, even in light themes) |
 | `control` *(optional)* | Small controls: slider rails, checkbox/radio fills, scrollbar handles. Defaults to `widget`. Set it when `widget` is the same as the background (like OLED's pure black), or those parts would disappear; OLED uses the outline color. |
 
 The header logo follows the theme too: the glyph takes `text`, the dot takes `accent`.
@@ -56,31 +57,33 @@ The header logo follows the theme too: the glyph takes `text`, the dot takes `ac
 
 ```json
 {
-  "name": "Snag Dark",
-  "dark": true,
+  "name": "Daylight",
+  "dark": false,
   "colors": {
-    "background": "#0e1116",
-    "panel": "#141820",
-    "text": "#f2f4f8",
-    "text_dim": "#9aa3b2",
-    "accent": "#f04a24",
-    "accent_text": "#0e1116",
-    "widget": "#1c222b",
-    "widget_hover": "#252c37",
-    "widget_active": "#2f3743",
-    "border": "#2a313c",
-    "success": "#34d399",
-    "warning": "#fbbf24",
-    "error": "#ff6b81",
-    "timeline": "#1a1f27",
-    "timeline_selection": "#f04a2459",
-    "playhead": "#f2f4f8"
+    "background": "#f4f3f0",
+    "panel": "#ffffff",
+    "text": "#1b1c1f",
+    "text_dim": "#5d6068",
+    "accent": "#d9441f",
+    "accent_text": "#ffffff",
+    "widget": "#ffffff",
+    "widget_hover": "#f2f1ed",
+    "widget_active": "#e8e6e1",
+    "border": "#e2e0da",
+    "success": "#1f8a5b",
+    "warning": "#b7791f",
+    "error": "#c62828",
+    "timeline": "#e8e6e1",
+    "timeline_selection": "#d9441f40",
+    "playhead": "#1b1c1f",
+    "control": "#e8e6e1",
+    "preview": "#1b1c1f"
   },
   "fonts": {
     "body": 14.0,
-    "heading": 21.0,
+    "heading": 20.0,
     "button": 14.0,
-    "small": 11.5,
+    "small": 12.0,
     "mono": 13.0,
     "family": null
   },
@@ -91,10 +94,10 @@ The header logo follows the theme too: the glyph takes `text`, the dot takes `ac
       6.0
     ],
     "button_padding": [
-      11.0,
-      6.0
+      14.0,
+      7.0
     ],
-    "window_margin": 12.0,
+    "window_margin": 14.0,
     "indent": 18.0
   }
 }

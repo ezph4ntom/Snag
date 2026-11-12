@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use eframe::egui::{self, Color32, CornerRadius, Pos2, Rect, Sense, Shape, Stroke, Vec2, pos2, vec2};
 
 /// Height of the title bar in points.
-pub const TITLE_H: f32 = 36.0;
+pub const TITLE_H: f32 = 52.0;
 const BUTTON_W: f32 = 46.0;
 
 // ---- the subclass ------------------------------------------------------------
@@ -181,9 +181,16 @@ enum Caption {
     Close,
 }
 
-/// Draws the title bar contents: logo + name on the left (draggable area),
-/// minimize/maximize/close on the right.
-pub fn title_bar(ui: &mut egui::Ui, colors: &crate::themes::Colors, logo: Option<&egui::TextureHandle>) {
+/// Draws the title bar: logo + name on the left, `middle` (the tabs, when
+/// the tab bar is docked at the top) after them, `right` (status) before
+/// minimize/maximize/close. Empty parts of the bar drag the window.
+pub fn title_bar(
+    ui: &mut egui::Ui,
+    colors: &crate::themes::Colors,
+    logo: Option<&egui::TextureHandle>,
+    middle: impl FnOnce(&mut egui::Ui),
+    right: impl FnOnce(&mut egui::Ui),
+) {
     let ctx = ui.ctx().clone();
     let rect = ui.max_rect();
     let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
@@ -208,7 +215,21 @@ pub fn title_bar(ui: &mut egui::Ui, colors: &crate::themes::Colors, logo: Option
         egui::FontId::new(19.0, crate::themes::brand_bold_family()),
         colors.text.0,
     );
+    let word_w = galley.size().x;
     ui.painter().galley(pos2(x, rect.center().y - galley.size().y / 2.0), galley, colors.text.0);
+
+    // Status (right-aligned before the caption buttons), then the tabs.
+    let slots_left = x + word_w + 28.0;
+    let slots_right = rect.right() - 3.0 * BUTTON_W - 8.0;
+    if slots_right > slots_left {
+        let slot = Rect::from_min_max(pos2(slots_left, rect.top()), pos2(slots_right, rect.bottom()));
+        let used = ui
+            .scope_builder(egui::UiBuilder::new().max_rect(slot).layout(egui::Layout::right_to_left(egui::Align::Center)), right)
+            .response
+            .rect;
+        let mid = Rect::from_min_max(slot.min, pos2((used.left() - 12.0).max(slot.left()), slot.bottom()));
+        ui.scope_builder(egui::UiBuilder::new().max_rect(mid).layout(egui::Layout::left_to_right(egui::Align::Center)), middle);
+    }
 
     // Caption buttons, right to left.
     let ppp = ctx.pixels_per_point();

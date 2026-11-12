@@ -9,7 +9,12 @@ A lightweight game-clipping app for Windows 10/11, written in Rust.
 * **Sound mixer**: record the whole PC (every output device, e.g. a
   headset's separate "Game" and "Chat" devices) or only the apps you tick
   (Spotify, the game, Discord...), each with its own volume and live meter.
-* **Live preview** of what's being recorded.
+* **Recording** for long sessions, two ways: **Start recording / Stop
+  recording** (button or **Ctrl+F9**), or **record the whole session** from
+  the moment Snag starts and save it whenever you like. It reuses the replay
+  buffer's encoder, so it adds no extra load.
+* **Live preview** of what's being recorded (sharp, ~30 fps; switch it off
+  and it costs nothing).
 * **Screenshots**: **Ctrl+F11** saves a PNG of the monitor being captured.
 * **Any key as a hotkey**: F-keys, letters, Print Screen, F12, a lone Right
   Ctrl, the middle/side mouse buttons, with or without modifiers, even keys
@@ -21,10 +26,9 @@ A lightweight game-clipping app for Windows 10/11, written in Rust.
   stepping, lossless "fast" cut or frame-exact "precise" cut.
 * **Auto-tuned quality**: detects your GPU/encoders/CPU/RAM/monitors and
   picks Quality/Balanced/Performance, and explains why.
-* **Themes**: JSON files, hot-reloaded. Snag Dark (Ember), Tide, Dusk,
-  Light, OLED (pure black) and Synthwave included. Snag draws its own title
-  bar in the theme (Windows snap, edge resizing and double-click maximize
-  still work).
+* **Themes**: JSON files, hot-reloaded. Daylight (default, light), Graphite,
+  Midnight, Warm Ink and OLED included. Snag draws its own title bar in the
+  theme (Windows snap, edge resizing and double-click maximize still work).
 * **Your layout**: drag the tab bar to any window edge, show tabs as icons
   only, and set the UI size with − / + in Settings → Window.
 
@@ -230,9 +234,9 @@ as `DROPPED n frame(s)`.
 is the clip you snagged) is drawn in code in `src/brand.rs` from the brand
 board's geometry, and produces every icon: tray (light or dark to match the
 taskbar, dot Ember while recording, grey when stopped), window/taskbar, the
-header, and the .exe icon (`build.rs`). The typeface is Space Grotesk
+header, and the .exe icon (`build.rs`). The typeface is DM Sans
 (Medium + Bold, built into the exe; SIL Open Font License, see
-`assets/fonts/SpaceGrotesk-OFL.txt`).
+`assets/fonts/DMSans-OFL.txt`).
 
 ---
 

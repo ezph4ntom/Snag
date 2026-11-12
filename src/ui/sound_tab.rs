@@ -15,11 +15,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use eframe::egui::{self, Color32, Rect, RichText, Sense, pos2, vec2};
+use eframe::egui::{self, Rect, RichText, Sense, pos2, vec2};
+
+use super::widgets;
 
 use super::{Shared, dim, section};
 use crate::audio::devices;
-use crate::config::{AudioAppChoice, AudioDeviceChoice};
+use crate::config::{AudioAppChoice, AudioDeviceChoice, AudioSettings};
 
 #[derive(Clone, Default)]
 struct Level {
@@ -153,19 +155,37 @@ pub struct SoundTab {
     last_live: Option<Instant>,
 }
 
-/// One mixer strip's result.
-struct StripOut {
+/// Which setting a source row edits.
+#[derive(Clone, PartialEq)]
+enum RowId {
+    Mic,
+    Device(String),
+    /// Lower-case exe name.
+    App(String),
+}
+
+/// One sound source as a row: what it is, its level and its choices.
+struct Row {
+    id: RowId,
+    /// "Microphone", "Output", "Game", "Playing"...
+    kind: &'static str,
+    name: String,
+    peak: f32,
     include: bool,
     volume: f32,
 }
 
-fn db(peak: f32) -> String {
-    if peak <= 0.000_01 { "-inf dB".into() } else { format!("{:.1} dB", 20.0 * peak.log10()) }
+/// "Speakers (HyperX Cloud Alpha S Game)" -> ("Speakers", "HyperX Cloud Alpha S Game").
+fn split_name(name: &str) -> (&str, &str) {
+    match name.split_once(" (") {
+        Some((m, rest)) => (m, rest.trim_end_matches(')')),
+        None => (name, ""),
+    }
 }
 
 impl SoundTab {
-    /// Called every frame with whether the tab is visible, so the level
-    /// reader only runs while it's needed.
+    /// Called every frame with whether a tab that shows sound levels is
+    /// visible, so the level reader only runs while it's needed.
     pub fn set_visible(&mut self, visible: bool, ctx: &egui::Context) {
         match (&self.monitor, visible) {
             (None, true) => self.monitor = Some(Monitor::start(ctx.clone())),
@@ -174,12 +194,107 @@ impl SoundTab {
         }
     }
 
+    fn snapshot(&self) -> Snapshot {
+        self.monitor.as_ref().and_then(|m| m.snapshot.lock().ok().map(|g| g.clone())).unwrap_or_default()
+    }
+
+    /// The rows to show: the microphone, then every output (whole-PC mode)
+    /// or the apps playing sound / ticked before (apps mode).
+    fn rows(snap: &Snapshot, a: &AudioSettings) -> Vec<Row> {
+        let mut rows = Vec::new();
+        let mic = if a.mic_device.is_empty() {
+            snap.mics.iter().find(|m| m.is_default)
+        } else {
+            snap.mics.iter().find(|m| m.id == a.mic_device)
+        };
+        rows.push(Row {
+            id: RowId::Mic,
+            kind: "Microphone",
+            name: mic.map(|m| m.name.clone()).unwrap_or_else(|| "Microphone".into()),
+            peak: mic.map(|m| m.peak).unwrap_or(0.0),
+            include: a.record_mic,
+            volume: a.mic_volume,
+        });
+        if a.whole_pc {
+            for d in &snap.outputs {
+                let choice = a.devices.iter().find(|c| c.id == d.id);
+                rows.push(Row {
+                    id: RowId::Device(d.id.clone()),
+                    kind: if d.is_default { "Output (default)" } else { "Output" },
+                    name: d.name.clone(),
+                    peak: d.peak,
+                    include: choice.is_none_or(|c| c.include),
+                    volume: choice.map(|c| c.volume).unwrap_or(1.0),
+                });
+            }
+            return rows;
+        }
+        let mut apps: Vec<AppLevel> = snap.apps.clone();
+        for c in &a.apps {
+            if c.include && !apps.iter().any(|l| l.exe == c.exe) {
+                apps.push(AppLevel { exe: c.exe.clone(), name: c.name.clone(), ..Default::default() });
+            }
+        }
+        apps.sort_by_key(|x| (!x.playing, !x.game, x.name.to_lowercase()));
+        for app in apps {
+            let choice = a.apps.iter().find(|c| c.exe == app.exe);
+            let running = snap.apps.iter().any(|s| s.exe == app.exe);
+            rows.push(Row {
+                kind: match (app.game, app.playing, running) {
+                    (true, ..) => "Game",
+                    (_, true, _) => "Playing",
+                    (_, _, true) => "Quiet",
+                    _ => "Not running",
+                },
+                id: RowId::App(app.exe.clone()),
+                name: app.name.clone(),
+                peak: app.peak,
+                include: choice.is_some_and(|c| c.include),
+                volume: choice.map(|c| c.volume).unwrap_or(1.0),
+            });
+        }
+        rows
+    }
+
+    /// Writes a row's choices back into the settings.
+    fn apply(a: &mut AudioSettings, row: &Row, include: bool, volume: f32) {
+        match &row.id {
+            RowId::Mic => {
+                a.record_mic = include;
+                a.mic_volume = volume;
+            }
+            RowId::Device(id) => {
+                a.devices.retain(|d| &d.id != id);
+                a.devices.push(AudioDeviceChoice { id: id.clone(), name: row.name.clone(), include, volume });
+            }
+            RowId::App(exe) => {
+                a.apps.retain(|x| &x.exe != exe);
+                a.apps.push(AudioAppChoice { exe: exe.clone(), name: row.name.clone(), include, volume });
+            }
+        }
+    }
+
+    /// Saves changed choices and tells the recorder right away (at most 30
+    /// times a second), so a slider is heard while it's dragged.
+    fn commit(&mut self, shared: &mut Shared, a: AudioSettings) {
+        if a == shared.settings.audio {
+            return;
+        }
+        if self.last_live.is_none_or(|t| t.elapsed() >= Duration::from_millis(33)) {
+            self.last_live = Some(Instant::now());
+            shared.outbox.push(crate::app::ipc::UiToCore::LiveAudio { audio: a.clone() });
+        }
+        shared.settings.audio = a;
+        shared.mark_dirty();
+    }
+
     pub fn ui(&mut self, ui: &mut egui::Ui, shared: &mut Shared) {
-        let snap = self.monitor.as_ref().and_then(|m| m.snapshot.lock().ok().map(|g| g.clone())).unwrap_or_default();
+        let snap = self.snapshot();
         let mut a = shared.settings.audio.clone();
         let status = shared.status.clone().unwrap_or_default();
         let warn = shared.theme.colors.warning.0;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            ui.set_max_width(900.0);
             section(ui, shared, "Recording", |ui| {
                 ui.horizontal(|ui| {
                     ui.checkbox(&mut a.record_pc_audio, "Record sound in clips");
@@ -195,7 +310,7 @@ impl SoundTab {
                 });
                 if shared.connected && status.recording && status.audio {
                     let now = if status.audio_sources.is_empty() { "nothing".into() } else { status.audio_sources.join(", ") };
-                    ui.label(dim(shared, format!("Recording now: {now}")));
+                    ui.label(dim(shared, format!("Recording now: {now}")).small());
                 }
                 if let Some(n) = &status.audio_note {
                     ui.label(RichText::new(n).color(warn).small());
@@ -204,197 +319,113 @@ impl SoundTab {
             ui.add_enabled_ui(a.record_pc_audio, |ui| {
                 section(ui, shared, "Sources", |ui| {
                     ui.checkbox(&mut a.whole_pc, "Whole PC audio (all outputs)");
-                    ui.label(dim(shared, if a.whole_pc {
+                    let hint = if a.whole_pc {
                         "Everything on every output. Untick to pick apps one by one."
                     } else {
                         "Only the ticked apps (and the microphone) are recorded."
-                    }).small());
-                    ui.add_space(6.0);
-                    egui::ScrollArea::horizontal().id_salt("strips").show(ui, |ui| {
-                        ui.horizontal_top(|ui| {
-                            self.mic_strip(ui, shared, &snap, &mut a);
-                            if a.whole_pc {
-                                for d in &snap.outputs {
-                                    let choice = a.devices.iter().find(|c| c.id == d.id).cloned().unwrap_or(AudioDeviceChoice {
-                                        id: d.id.clone(),
-                                        name: d.name.clone(),
-                                        ..Default::default()
-                                    });
-                                    let label = if d.is_default { "Output (default)" } else { "Output" };
-                                    let r = strip(ui, shared, ("dev", &d.id), label, &d.name, d.peak, choice.include, choice.volume, None);
-                                    if r.include != choice.include || r.volume != choice.volume {
-                                        let mut c = choice.clone();
-                                        c.include = r.include;
-                                        c.volume = r.volume;
-                                        a.devices.retain(|x| x.id != c.id);
-                                        a.devices.push(c);
-                                    }
-                                }
-                            } else {
-                                self.app_strips(ui, shared, &snap, &mut a);
-                            }
-                        });
-                    });
+                    };
+                    ui.label(dim(shared, hint).small());
+                    ui.add_space(10.0);
+                    let rows = Self::rows(&snap, &a);
+                    if rows.len() == 1 && !a.whole_pc {
+                        ui.label(dim(shared, "No apps are playing sound right now. Start one and it shows up here."));
+                    }
+                    for row in &rows {
+                        Self::full_row(ui, shared, &snap, &mut a, row);
+                    }
                 });
             });
         });
-        if a != shared.settings.audio {
-            // Tell the recorder right away (at most 30 times a second), so a
-            // fader is heard while it's dragged, not only when let go.
-            if self.last_live.is_none_or(|t| t.elapsed() >= Duration::from_millis(33)) {
-                self.last_live = Some(Instant::now());
-                shared.outbox.push(crate::app::ipc::UiToCore::LiveAudio { audio: a.clone() });
-            }
-            shared.settings.audio = a;
-            shared.mark_dirty();
-        }
+        self.commit(shared, a);
     }
 
-    fn mic_strip(&mut self, ui: &mut egui::Ui, shared: &Shared, snap: &Snapshot, a: &mut crate::config::AudioSettings) {
-        let current = if a.mic_device.is_empty() {
-            snap.mics.iter().find(|m| m.is_default)
-        } else {
-            snap.mics.iter().find(|m| m.id == a.mic_device)
-        };
-        let name = current.map(|m| m.name.clone()).unwrap_or_else(|| "No microphone".into());
-        let peak = current.map(|m| m.peak).unwrap_or(0.0);
-        let mut device = a.mic_device.clone();
-        let mics = &snap.mics;
-        let mut pick = |ui: &mut egui::Ui| {
-            let text = if device.is_empty() { "Default" } else { "Chosen" };
-            egui::ComboBox::from_id_salt("mic_pick").selected_text(text).width(96.0).show_ui(ui, |ui| {
-                ui.selectable_value(&mut device, String::new(), "Windows default");
-                for m in mics {
-                    ui.selectable_value(&mut device, m.id.clone(), &m.name);
+    /// A row on the Sound tab: Record box, name, level meter, value, slider.
+    fn full_row(ui: &mut egui::Ui, shared: &Shared, snap: &Snapshot, a: &mut AudioSettings, row: &Row) {
+        let theme = shared.theme.clone();
+        let c = &theme.colors;
+        let (mut include, mut volume) = (row.include, row.volume);
+        ui.horizontal(|ui| {
+            ui.set_min_height(48.0);
+            ui.checkbox(&mut include, "").on_hover_text("Record this source");
+            let (main, sub) = split_name(&row.name);
+            ui.allocate_ui_with_layout(vec2(250.0, 44.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                ui.set_min_width(250.0);
+                ui.set_max_width(250.0);
+                ui.spacing_mut().item_spacing.y = 1.0;
+                ui.add(egui::Label::new(RichText::new(main).strong()).truncate()).on_hover_text(&row.name);
+                let detail = if sub.is_empty() { row.kind.to_string() } else { format!("{} · {sub}", row.kind) };
+                ui.add(egui::Label::new(RichText::new(detail).small().color(c.text_dim.0)).truncate());
+            });
+            meter(ui, &theme, row.peak * volume, include, 90.0);
+            ui.add_space(6.0);
+            ui.add_enabled_ui(include, |ui| {
+                widgets::value_box(ui, &theme, &format!("{}", (volume * 100.0).round()), "%", 64.0);
+                if widgets::pill_slider(ui, &theme, &mut volume, 200.0).changed() {
+                    volume = (volume * 100.0).round() / 100.0;
                 }
             });
-        };
-        let r = strip(ui, shared, ("mic", ""), "Microphone", &name, peak, a.record_mic, a.mic_volume, Some(&mut pick));
-        a.mic_device = device;
-        a.record_mic = r.include;
-        a.mic_volume = r.volume;
-    }
-
-    fn app_strips(&mut self, ui: &mut egui::Ui, shared: &Shared, snap: &Snapshot, a: &mut crate::config::AudioSettings) {
-        // Apps seen now, plus remembered ticked apps that aren't running.
-        let mut list: Vec<AppLevel> = snap.apps.clone();
-        for c in &a.apps {
-            if c.include && !list.iter().any(|l| l.exe == c.exe) {
-                list.push(AppLevel { exe: c.exe.clone(), name: c.name.clone(), ..Default::default() });
-            }
-        }
-        list.sort_by_key(|x| (!x.playing, !x.game, x.name.to_lowercase()));
-        if list.is_empty() {
-            ui.label(dim(shared, "No apps are playing sound right now. Start one and it shows up here."));
-        }
-        for app in list {
-            let choice = a.apps.iter().find(|c| c.exe == app.exe).cloned().unwrap_or(AudioAppChoice {
-                exe: app.exe.clone(),
-                name: app.name.clone(),
-                include: false,
-                volume: 1.0,
-            });
-            let kind = match (app.game, app.playing) {
-                (true, _) => "Game",
-                (false, true) => "Playing",
-                (false, false) if app.peak == 0.0 && !snap.apps.iter().any(|s| s.exe == app.exe) => "Not running",
-                _ => "Quiet",
-            };
-            let r = strip(ui, shared, ("app", &app.exe), kind, &app.name, app.peak, choice.include, choice.volume, None);
-            if r.include != choice.include || r.volume != choice.volume {
-                let mut c = choice;
-                c.include = r.include;
-                c.volume = r.volume;
-                c.name = app.name.clone();
-                a.apps.retain(|x| x.exe != c.exe);
-                a.apps.push(c);
-            }
-        }
-    }
-}
-
-/// One vertical mixer strip: kind, name, level in dB, volume fader next to
-/// a peak meter, and the "Record" box. `extra` adds a widget (mic picker).
-#[allow(clippy::too_many_arguments)]
-fn strip(
-    ui: &mut egui::Ui,
-    shared: &Shared,
-    id: (&str, &str),
-    kind: &str,
-    name: &str,
-    peak: f32,
-    include: bool,
-    volume: f32,
-    extra: Option<&mut dyn FnMut(&mut egui::Ui)>,
-) -> StripOut {
-    let c = &shared.theme.colors;
-    let mut out = StripOut { include, volume };
-    egui::Frame::new()
-        .fill(c.background.0)
-        .stroke(egui::Stroke::new(1.0, if include { c.accent.0 } else { c.border.0 }))
-        .corner_radius(egui::CornerRadius::same(shared.theme.corner_radius.clamp(0.0, 255.0) as u8))
-        .inner_margin(egui::Margin::same(8))
-        .show(ui, |ui| {
-            ui.push_id(id, |ui| {
-                ui.set_width(112.0);
-                ui.set_min_height(262.0);
-                ui.vertical_centered(|ui| {
-                    let kind_color = if include { c.accent.0 } else { c.text_dim.0 };
-                    ui.label(RichText::new(kind).small().color(kind_color));
-                    // "Speakers (HyperX Cloud Alpha S Game)": the part in
-                    // brackets goes on its own smaller line.
-                    let (main, sub) = match name.split_once(" (") {
-                        Some((m, rest)) => (m, rest.trim_end_matches(')')),
-                        None => (name, ""),
-                    };
-                    ui.add(egui::Label::new(RichText::new(main).strong()).truncate()).on_hover_text(name);
-                    ui.add(egui::Label::new(RichText::new(if sub.is_empty() { " " } else { sub }).small().color(c.text_dim.0)).truncate())
-                        .on_hover_text(name);
-                    ui.label(RichText::new(db(peak * volume)).small().color(c.text_dim.0).monospace());
-                    ui.horizontal(|ui| {
-                        ui.add_space(14.0);
-                        let mut pct = (volume * 100.0).round() as u32;
-                        ui.spacing_mut().slider_width = 130.0;
-                        let resp = ui
-                            .add(egui::Slider::new(&mut pct, 0..=100).vertical().show_value(false))
-                            .on_hover_text(format!("Volume in clips: {pct} %"));
-                        if resp.changed() {
-                            out.volume = pct as f32 / 100.0;
-                        }
-                        ui.add_space(6.0);
-                        meter(ui, shared, peak * volume, include);
-                    });
-                    ui.label(RichText::new(format!("{} %", (out.volume * 100.0).round())).small());
-                    if let Some(f) = extra {
-                        f(ui);
+            if row.id == RowId::Mic {
+                let mut device = a.mic_device.clone();
+                let text = if device.is_empty() { "Default mic".to_string() } else { "Chosen mic".to_string() };
+                egui::ComboBox::from_id_salt("mic_pick").selected_text(text).width(120.0).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut device, String::new(), "Windows default");
+                    for m in &snap.mics {
+                        ui.selectable_value(&mut device, m.id.clone(), &m.name);
                     }
-                    ui.checkbox(&mut out.include, "Record");
+                });
+                a.mic_device = device;
+            }
+        });
+        if include != row.include || volume != row.volume {
+            Self::apply(a, row, include, volume);
+        }
+        ui.separator();
+    }
+
+    /// The Live tab's "Sound in clips": the recorded sources with a volume
+    /// slider each.
+    pub fn compact(&mut self, ui: &mut egui::Ui, shared: &mut Shared) {
+        let snap = self.snapshot();
+        let mut a = shared.settings.audio.clone();
+        let theme = shared.theme.clone();
+        if !a.record_pc_audio {
+            ui.label(dim(shared, "Sound is off (Sound tab)."));
+            return;
+        }
+        let rows: Vec<Row> = Self::rows(&snap, &a).into_iter().filter(|r| r.include).collect();
+        if rows.is_empty() {
+            ui.label(dim(shared, "Nothing is recorded. Pick sources in the Sound tab."));
+        }
+        let w = ui.available_width();
+        for row in &rows {
+            let (main, _) = split_name(&row.name);
+            let mut volume = row.volume;
+            ui.horizontal(|ui| {
+                ui.add(egui::Label::new(RichText::new(main)).truncate());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(RichText::new(format!("{} %", (volume * 100.0).round())).color(theme.colors.text_dim.0));
                 });
             });
-        });
-    out
+            if widgets::pill_slider(ui, &theme, &mut volume, w).changed() {
+                volume = (volume * 100.0).round() / 100.0;
+                Self::apply(&mut a, row, true, volume);
+            }
+            ui.add_space(8.0);
+        }
+        self.commit(shared, a);
+    }
 }
 
-/// A vertical peak meter from -60 dB (bottom) to 0 dB (top).
-fn meter(ui: &mut egui::Ui, shared: &Shared, peak: f32, on: bool) {
-    let c = &shared.theme.colors;
-    let (rect, _) = ui.allocate_exact_size(vec2(10.0, 130.0), Sense::hover());
+/// A thin horizontal level meter (-60 dB left, 0 dB right).
+fn meter(ui: &mut egui::Ui, theme: &crate::themes::Theme, peak: f32, on: bool, width: f32) {
+    let c = &theme.colors;
+    let (rect, _) = ui.allocate_exact_size(vec2(width, 6.0), Sense::hover());
     let p = ui.painter();
-    p.rect_filled(rect, 2.0, c.timeline.0);
+    p.rect_filled(rect, 3.0, c.control.map(|h| h.0).unwrap_or(c.widget.0));
     let level = if peak <= 0.001 { 0.0 } else { ((20.0 * peak.log10() + 60.0) / 60.0).clamp(0.0, 1.0) };
-    let top = rect.bottom() - rect.height() * level;
-    let segments = [(0.0, 0.7, c.success.0), (0.7, 0.9, c.warning.0), (0.9, 1.0, c.error.0)];
-    for (from, to, color) in segments {
-        let y0 = rect.bottom() - rect.height() * from;
-        let y1 = (rect.bottom() - rect.height() * to).max(top);
-        if y1 < y0 {
-            let col = if on { color } else { color.gamma_multiply(0.35) };
-            p.rect_filled(Rect::from_min_max(pos2(rect.left(), y1), pos2(rect.right(), y0)), 1.0, col);
-        }
-    }
-    // Ticks every 12 dB.
-    for i in 1..5 {
-        let y = rect.bottom() - rect.height() * i as f32 / 5.0;
-        p.line_segment([pos2(rect.left(), y), pos2(rect.right(), y)], egui::Stroke::new(1.0, Color32::from_black_alpha(90)));
+    if level > 0.0 {
+        let color = if level > 0.92 { c.error.0 } else if level > 0.75 { c.warning.0 } else { c.success.0 };
+        let fill = Rect::from_min_max(rect.min, pos2(rect.left() + rect.width() * level, rect.bottom()));
+        p.rect_filled(fill, 3.0, if on { color } else { color.gamma_multiply(0.35) });
     }
 }

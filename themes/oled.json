@@ -1,5 +1,5 @@
 {
-  "name": "Snag OLED",
+  "name": "OLED",
   "dark": true,
   "colors": {
     "background": "#000000",
@@ -9,8 +9,8 @@
     "accent": "#f04a24",
     "accent_text": "#0e1116",
     "widget": "#000000",
-    "widget_hover": "#000000",
-    "widget_active": "#000000",
+    "widget_hover": "#0c0d10",
+    "widget_active": "#15171b",
     "border": "#2a313c",
     "success": "#34d399",
     "warning": "#fbbf24",
@@ -18,13 +18,14 @@
     "timeline": "#000000",
     "timeline_selection": "#f04a2459",
     "playhead": "#f2f4f8",
-    "control": "#2a313c"
+    "control": "#2a313c",
+    "preview": "#000000"
   },
   "fonts": {
     "body": 14.0,
-    "heading": 21.0,
+    "heading": 20.0,
     "button": 14.0,
-    "small": 11.5,
+    "small": 12.0,
     "mono": 13.0,
     "family": null
   },
@@ -35,10 +36,10 @@
       6.0
     ],
     "button_padding": [
-      11.0,
-      6.0
+      14.0,
+      7.0
     ],
-    "window_margin": 12.0,
+    "window_margin": 14.0,
     "indent": 18.0
   }
 }

@@ -1,0 +1,45 @@
+{
+  "name": "Daylight",
+  "dark": false,
+  "colors": {
+    "background": "#f4f3f0",
+    "panel": "#ffffff",
+    "text": "#1b1c1f",
+    "text_dim": "#5d6068",
+    "accent": "#d9441f",
+    "accent_text": "#ffffff",
+    "widget": "#ffffff",
+    "widget_hover": "#f2f1ed",
+    "widget_active": "#e8e6e1",
+    "border": "#e2e0da",
+    "success": "#1f8a5b",
+    "warning": "#b7791f",
+    "error": "#c62828",
+    "timeline": "#e8e6e1",
+    "timeline_selection": "#d9441f40",
+    "playhead": "#1b1c1f",
+    "control": "#e8e6e1",
+    "preview": "#1b1c1f"
+  },
+  "fonts": {
+    "body": 14.0,
+    "heading": 20.0,
+    "button": 14.0,
+    "small": 12.0,
+    "mono": 13.0,
+    "family": null
+  },
+  "corner_radius": 8.0,
+  "spacing": {
+    "item": [
+      8.0,
+      6.0
+    ],
+    "button_padding": [
+      14.0,
+      7.0
+    ],
+    "window_margin": 14.0,
+    "indent": 18.0
+  }
+}

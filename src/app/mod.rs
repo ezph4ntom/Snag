@@ -31,7 +31,7 @@ use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWi
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{PCWSTR, w};
 
-use crate::hotkeys::{self, Hotkey, ID_CLIP, ID_SCREENSHOT};
+use crate::hotkeys::{self, Hotkey, ID_CLIP, ID_RECORD, ID_SCREENSHOT};
 use controller::{Controller, Event};
 pub use ipc::HotkeyReport;
 
@@ -45,13 +45,13 @@ const SHOW_TABS: [&str; 6] = ["clips", "live", "sound", "settings", "quality", "
 
 /// Work only the main thread may do.
 pub enum MainRequest {
-    RegisterHotkeys { clip: String, screenshot: String },
+    RegisterHotkeys { clip: String, screenshot: String, record: String },
     /// Record the next key press as the hotkey for `target`.
     BeginHotkeyCapture { target: String },
     CancelHotkeyCapture,
     /// Install/remove the keyboard hook to match what's needed now.
     UpdateKeyHook,
-    UpdateTray { recording: bool, tooltip: String, clip_key: String, shot_key: String },
+    UpdateTray { recording: bool, tooltip: String, clip_key: String, shot_key: String, record_label: String },
     Quit,
 }
 
@@ -115,7 +115,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
 
 fn handle_request(hwnd: HWND, req: MainRequest) {
     match req {
-        MainRequest::RegisterHotkeys { clip, screenshot } => {
+        MainRequest::RegisterHotkeys { clip, screenshot, record } => {
             // Every hotkey goes through the keyboard hook (it works in games
             // that block normal hotkeys), plus Windows' own registration
             // where Windows allows it (that one also works while a program
@@ -123,7 +123,7 @@ fn handle_request(hwnd: HWND, req: MainRequest) {
             let mut report = HotkeyReport::default();
             let mut hooked = Vec::new();
             let mut registered = Vec::new();
-            for (id, text, what) in [(ID_CLIP, clip, "Clip"), (ID_SCREENSHOT, screenshot, "Screenshot")] {
+            for (id, text, what) in [(ID_CLIP, clip, "Clip"), (ID_SCREENSHOT, screenshot, "Screenshot"), (ID_RECORD, record, "Record")] {
                 let hk = match Hotkey::parse(&text) {
                     Ok(hk) => hk,
                     Err(e) => {
@@ -152,7 +152,11 @@ fn handle_request(hwnd: HWND, req: MainRequest) {
             }
             if let Some(err) = keyhook::set_bindings(hooked.clone()) {
                 for (id, hk) in &hooked {
-                    let what = if *id == ID_CLIP { "Clip" } else { "Screenshot" };
+                    let what = match *id {
+                        ID_CLIP => "Clip",
+                        ID_SCREENSHOT => "Screenshot",
+                        _ => "Record",
+                    };
                     let shown = hotkeys::display(&hk.to_string());
                     if registered.contains(id) {
                         report.notes.push(format!(
@@ -173,9 +177,9 @@ fn handle_request(hwnd: HWND, req: MainRequest) {
                 log::error!("{e}");
             }
         }
-        MainRequest::UpdateTray { recording, tooltip, clip_key, shot_key } => TRAY.with(|t| {
+        MainRequest::UpdateTray { recording, tooltip, clip_key, shot_key, record_label } => TRAY.with(|t| {
             if let Some(t) = t.borrow().as_ref() {
-                t.update(recording, &tooltip, &clip_key, &shot_key);
+                t.update(recording, &tooltip, &clip_key, &shot_key, &record_label);
             }
         }),
         // SAFETY: called on the thread that runs the message loop.

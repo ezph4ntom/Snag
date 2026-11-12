@@ -1,6 +1,6 @@
 [package]
 name = "snag"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2024"
 description = "Lightweight game-clipping app for Windows (replay buffer, screenshots, trimmer)"
 

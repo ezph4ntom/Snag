@@ -1,0 +1,45 @@
+{
+  "name": "Midnight",
+  "dark": true,
+  "colors": {
+    "background": "#0a0e17",
+    "panel": "#101726",
+    "text": "#e6ecf5",
+    "text_dim": "#8fa0bb",
+    "accent": "#22d3ee",
+    "accent_text": "#04141a",
+    "widget": "#111827",
+    "widget_hover": "#1a2336",
+    "widget_active": "#243049",
+    "border": "#1c2537",
+    "success": "#34d399",
+    "warning": "#fbbf24",
+    "error": "#ff6b81",
+    "timeline": "#111827",
+    "timeline_selection": "#22d3ee45",
+    "playhead": "#e6ecf5",
+    "control": "#243049",
+    "preview": "#05070c"
+  },
+  "fonts": {
+    "body": 14.0,
+    "heading": 20.0,
+    "button": 14.0,
+    "small": 12.0,
+    "mono": 13.0,
+    "family": null
+  },
+  "corner_radius": 10.0,
+  "spacing": {
+    "item": [
+      8.0,
+      6.0
+    ],
+    "button_padding": [
+      14.0,
+      7.0
+    ],
+    "window_margin": 14.0,
+    "indent": 18.0
+  }
+}

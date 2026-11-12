@@ -8,13 +8,14 @@ use eframe::egui::{self, RichText};
 
 use super::{Shared, section};
 use crate::app::ipc::UiToCore;
-use crate::config::{AfterClip, CaptureMode};
+use crate::config::{AfterClip, CaptureMode, RecordMode};
 use crate::hotkeys::Hotkey;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Which {
     Clip,
     Screenshot,
+    Record,
 }
 
 impl Which {
@@ -22,6 +23,7 @@ impl Which {
         match self {
             Which::Clip => "clip",
             Which::Screenshot => "screenshot",
+            Which::Record => "record",
         }
     }
 }
@@ -89,21 +91,43 @@ impl SettingsTab {
     }
 
     fn buffer_section(&mut self, ui: &mut egui::Ui, shared: &mut Shared) {
-        let s = &mut shared.settings;
-        let mut secs = s.buffer_seconds;
-        let mut start = s.start_buffer_on_launch;
+        let theme = shared.theme.clone();
+        let mut secs = shared.settings.buffer_seconds;
+        let mut start = shared.settings.start_buffer_on_launch;
+        let mut mode = shared.settings.recording.mode;
         section(ui, shared, "Replay buffer", |ui| {
             ui.horizontal(|ui| {
-                ui.label("Clip length");
-                ui.spacing_mut().slider_width = 320.0;
-                ui.add(egui::Slider::new(&mut secs, 5..=300).step_by(5.0).suffix(" s"));
+                super::widgets::label_w(ui, "Clip length", 110.0);
+                super::widgets::value_box(ui, &theme, &secs.to_string(), "s", 64.0);
+                // 5..300 s in steps of 5.
+                let mut t = (secs as f32 - 5.0) / 295.0;
+                if super::widgets::pill_slider(ui, &theme, &mut t, 320.0).changed() {
+                    secs = (((t * 295.0 + 5.0) / 5.0).round() * 5.0) as u32;
+                }
             });
+            ui.add_space(4.0);
             ui.checkbox(&mut start, "Start the replay buffer when Snag starts");
         });
+        section(ui, shared, "Recording", |ui| {
+            ui.radio_value(&mut mode, RecordMode::Manual, "Start and stop recordings myself");
+            ui.label(RichText::new("     The Record button or hotkey starts a recording; pressing it again stops and saves it.").small());
+            ui.add_space(4.0);
+            ui.radio_value(&mut mode, RecordMode::WholeSession, "Record my whole session automatically");
+            ui.label(
+                RichText::new(
+                    "     Snag records from the moment it starts. The Record button or hotkey saves everything so far \
+                     (recording continues). Unsaved footage is discarded when Snag quits.",
+                )
+                .small(),
+            );
+            ui.add_space(4.0);
+            ui.label(RichText::new("Recordings use the replay buffer's encoder (no extra load) and go to your clips folder.").small());
+        });
         let s = &mut shared.settings;
-        if secs != s.buffer_seconds || start != s.start_buffer_on_launch {
+        if secs != s.buffer_seconds || start != s.start_buffer_on_launch || mode != s.recording.mode {
             s.buffer_seconds = secs;
             s.start_buffer_on_launch = start;
+            s.recording.mode = mode;
             shared.mark_dirty();
         }
     }
@@ -117,6 +141,7 @@ impl SettingsTab {
         let mut restart_admin = false;
         let clip = shared.settings.hotkeys.clip.clone();
         let shot = shared.settings.hotkeys.screenshot.clone();
+        let record = shared.settings.hotkeys.record.clone();
         let (error_color, warn_color) = (shared.theme.colors.error.0, shared.theme.colors.warning.0);
         let mut start_capture = None;
         let mut cancel = false;
@@ -125,7 +150,9 @@ impl SettingsTab {
         let capture_note = self.capture_note.clone();
         section(ui, shared, "Hotkeys", |ui| {
             egui::Grid::new("hotkeys").num_columns(3).spacing([16.0, 8.0]).show(ui, |ui| {
-                for (which, label, value) in [(Which::Clip, "Save clip", &clip), (Which::Screenshot, "Screenshot", &shot)] {
+                for (which, label, value) in
+                    [(Which::Clip, "Save clip", &clip), (Which::Screenshot, "Screenshot", &shot), (Which::Record, "Record", &record)]
+                {
                     ui.label(label);
                     let waiting = capturing == Some(which);
                     let text = if waiting {
@@ -202,13 +229,26 @@ impl SettingsTab {
         let stored = hk.to_string();
         let text = crate::hotkeys::display(&stored);
         let keys = &mut shared.settings.hotkeys;
-        let (mine, other) = match which {
-            Which::Clip => (&mut keys.clip, &mut keys.screenshot),
-            Which::Screenshot => (&mut keys.screenshot, &mut keys.clip),
+        let mine_now = match which {
+            Which::Clip => keys.clip.clone(),
+            Which::Screenshot => keys.screenshot.clone(),
+            Which::Record => keys.record.clone(),
         };
-        if Hotkey::parse(other).ok() == Some(hk) {
-            *other = mine.clone();
-            self.capture_note = Some(format!("{text} was the other hotkey; the two were swapped."));
+        // Picking another action's key swaps the two.
+        let mut swapped = false;
+        for (w, slot) in [(Which::Clip, &mut keys.clip), (Which::Screenshot, &mut keys.screenshot), (Which::Record, &mut keys.record)] {
+            if w != which && Hotkey::parse(slot).ok() == Some(hk) {
+                *slot = mine_now.clone();
+                swapped = true;
+            }
+        }
+        let mine = match which {
+            Which::Clip => &mut keys.clip,
+            Which::Screenshot => &mut keys.screenshot,
+            Which::Record => &mut keys.record,
+        };
+        if swapped {
+            self.capture_note = Some(format!("{text} was another action's hotkey; the two were swapped."));
         } else if hk.is_plain_key() {
             self.capture_note = Some(format!("{text} will only trigger Snag now; it no longer reaches games or other apps while Snag runs."));
         } else if hk.is_modifier_only() {
@@ -283,6 +323,9 @@ impl SettingsTab {
                 ui.end_row();
                 ui.label("");
                 ui.checkbox(&mut u.icon_tabs, "Icons only (names show on hover)");
+                ui.end_row();
+                ui.label("Live tab");
+                ui.checkbox(&mut u.live_preview, "Show the live preview (off saves a little CPU)");
                 ui.end_row();
             });
             ui.label(RichText::new("Tip: drag the tab bar's grip to any edge of the window.").small());
@@ -378,6 +421,7 @@ impl SettingsTab {
             self.sound_check = Some((file.clone(), err));
         }
         let error = self.sound_check.as_ref().and_then(|(_, e)| e.clone());
+        let theme = shared.theme.clone();
         let error_color = shared.theme.colors.error.0;
         let mut test = false;
         let mut choose = false;
@@ -385,11 +429,11 @@ impl SettingsTab {
             ui.checkbox(&mut snd.enabled, "Play a sound when a clip is saved");
             ui.add_enabled_ui(snd.enabled, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label("Volume");
-                    ui.spacing_mut().slider_width = 220.0;
-                    let mut pct = (snd.volume * 100.0).round() as u32;
-                    if ui.add(egui::Slider::new(&mut pct, 0..=100).suffix(" %")).changed() {
-                        snd.volume = pct as f32 / 100.0;
+                    super::widgets::label_w(ui, "Volume", 110.0);
+                    super::widgets::value_box(ui, &theme, &format!("{}", (snd.volume * 100.0).round()), "%", 64.0);
+                    let mut v = snd.volume;
+                    if super::widgets::pill_slider(ui, &theme, &mut v, 220.0).changed() {
+                        snd.volume = (v * 100.0).round() / 100.0;
                     }
                     test = ui.button("Test").clicked();
                 });

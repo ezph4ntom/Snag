@@ -24,6 +24,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 
 pub const ID_CLIP: i32 = 1;
 pub const ID_SCREENSHOT: i32 = 2;
+/// Start/stop recording (manual mode) or save the session (session mode).
+pub const ID_RECORD: i32 = 3;
 
 /// Escape is reserved for cancelling hotkey capture.
 pub const VK_ESCAPE: u32 = 0x1B;

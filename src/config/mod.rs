@@ -26,6 +26,7 @@ pub struct Settings {
     pub audio: AudioSettings,
     pub sound: SoundSettings,
     pub trimmer: TrimmerSettings,
+    pub recording: RecordingSettings,
     /// Theme id = file name in `themes/` without `.json`.
     pub theme: String,
     /// Window layout: size, tab bar position and style.
@@ -47,7 +48,8 @@ impl Default for Settings {
             audio: AudioSettings::default(),
             sound: SoundSettings::default(),
             trimmer: TrimmerSettings::default(),
-            theme: "dark".into(),
+            recording: RecordingSettings::default(),
+            theme: "daylight".into(),
             ui: UiSettings::default(),
             hardware: None,
         }
@@ -71,11 +73,14 @@ pub struct UiSettings {
     pub tab_dock: TabDock,
     /// Show tabs as icons only (names in tooltips).
     pub icon_tabs: bool,
+    /// Show the live preview on the Live tab (off = no preview frames are
+    /// made at all).
+    pub live_preview: bool,
 }
 
 impl Default for UiSettings {
     fn default() -> Self {
-        Self { scale: 1.0, tab_dock: TabDock::Top, icon_tabs: false }
+        Self { scale: 1.0, tab_dock: TabDock::Top, icon_tabs: false, live_preview: true }
     }
 }
 
@@ -91,6 +96,8 @@ pub struct HotkeySettings {
     pub clip: String,
     /// Saves a PNG of the captured monitor.
     pub screenshot: String,
+    /// Start/stop a recording, or save the session (see `RecordMode`).
+    pub record: String,
 }
 
 impl Default for HotkeySettings {
@@ -101,7 +108,32 @@ impl Default for HotkeySettings {
         Self {
             clip: "Ctrl+F10".into(),
             screenshot: "Ctrl+F11".into(),
+            record: "Ctrl+F9".into(),
         }
+    }
+}
+
+/// How long recordings work.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum RecordMode {
+    /// "Start recording" / "Stop recording" (button or hotkey); stopping
+    /// saves the file.
+    Manual,
+    /// Snag records the whole session from the moment it starts. The
+    /// hotkey/button saves everything so far and recording continues.
+    /// Unsaved session footage is discarded when Snag quits.
+    WholeSession,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct RecordingSettings {
+    pub mode: RecordMode,
+}
+
+impl Default for RecordingSettings {
+    fn default() -> Self {
+        Self { mode: RecordMode::Manual }
     }
 }
 

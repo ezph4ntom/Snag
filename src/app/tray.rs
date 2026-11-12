@@ -14,6 +14,7 @@ pub struct Tray {
     toggle: MenuItem,
     save: MenuItem,
     shot: MenuItem,
+    record: MenuItem,
     /// (recording, light taskbar) -> icon, built lazily.
     icons: std::cell::RefCell<std::collections::HashMap<(bool, bool), Icon>>,
 }
@@ -40,6 +41,7 @@ fn make_icon(recording: bool, light_taskbar: bool) -> Icon {
 const ID_SAVE: &str = "save_clip";
 const ID_SHOT: &str = "screenshot";
 const ID_TOGGLE: &str = "toggle_buffer";
+const ID_RECORD: &str = "record";
 const ID_CLIPS: &str = "open_clips";
 const ID_TRIM: &str = "open_trimmer";
 const ID_SETTINGS: &str = "settings";
@@ -50,9 +52,11 @@ impl Tray {
         let save = MenuItem::with_id(ID_SAVE, "Save clip", true, None);
         let shot = MenuItem::with_id(ID_SHOT, "Take screenshot", true, None);
         let toggle = MenuItem::with_id(ID_TOGGLE, "Start replay buffer", true, None);
+        let record = MenuItem::with_id(ID_RECORD, "Start recording", true, None);
         let menu = Menu::with_items(&[
             &save,
             &shot,
+            &record,
             &PredefinedMenuItem::separator(),
             &toggle,
             &MenuItem::with_id(ID_CLIPS, "Open clips folder", true, None),
@@ -70,6 +74,7 @@ impl Tray {
                 ID_SAVE => TrayAction::SaveClip,
                 ID_SHOT => TrayAction::Screenshot,
                 ID_TOGGLE => TrayAction::ToggleBuffer,
+                ID_RECORD => TrayAction::Record,
                 ID_CLIPS => TrayAction::OpenClipsFolder,
                 ID_TRIM => TrayAction::OpenTrimmer,
                 ID_SETTINGS => TrayAction::OpenSettings,
@@ -103,12 +108,14 @@ impl Tray {
             toggle,
             save,
             shot,
+            record,
             icons: Default::default(),
         })
     }
 
     /// Updates icon, tooltip and menu labels.
-    pub fn update(&self, recording: bool, tooltip: &str, clip_key: &str, shot_key: &str) {
+    pub fn update(&self, recording: bool, tooltip: &str, clip_key: &str, shot_key: &str, record_label: &str) {
+        self.record.set_text(record_label);
         let light = crate::win::taskbar_is_light();
         let icon = self.icons.borrow_mut().entry((recording, light)).or_insert_with(|| make_icon(recording, light)).clone();
         let _ = self.icon.set_icon(Some(icon));

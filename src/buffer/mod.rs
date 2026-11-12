@@ -26,6 +26,7 @@
 
 pub mod clip;
 pub mod playlist;
+pub mod recording;
 pub mod source;
 
 use std::path::PathBuf;
@@ -396,7 +397,7 @@ fn pacer_main(
     log::info!("recording at {w}x{h} @ {} fps ({} after first frame wait)", cfg.fps, fmt_ms(warm_start.elapsed()));
 
     let mut tick: u64 = 0;
-    let preview_every = (cfg.fps as u64 / 15).max(1);
+    let preview_every = (cfg.fps as u64 / 30).max(1); // ~30 previews a second
     let mut drops_this_window: u64 = 0;
     let mut window_start = Instant::now();
     let result: Result<()> = 'run: loop {
@@ -452,7 +453,7 @@ fn pacer_main(
                 session.stats.frames_unchanged.fetch_add(1, Ordering::Relaxed);
             }
         }
-        // Live preview for the window (~15 fps, only while it's shown).
+        // Live preview for the window (~30 fps, only while it's shown).
         if crate::capture::preview::WANTED.load(Ordering::Relaxed) && tick.is_multiple_of(preview_every) {
             crate::capture::preview::offer(&last);
         }

@@ -45,6 +45,9 @@ key or combination (Esc cancels).
 - [ ] Clips include your voice (microphone) and Discord, even if Discord uses a different output device
 - [ ] Sound tab: untick "Whole PC audio", tick only some apps, and check the next clip has only those
 - [ ] Trimmer: pressing Play also plays the clip's sound
+- [ ] Recording: **Ctrl+F9** starts a recording, **Ctrl+F9** again stops and saves it (also the Live tab button)
+- [ ] Settings > Recording > "Record my whole session": Snag records from the start; **Ctrl+F9** saves everything so far
+- [ ] Live tab: the preview looks sharp; "Hide preview" / "Enable preview" work
 - [ ] Window: drag the tab bar to another edge; maximize/snap/resize the window
 - [ ] Does your game's FPS drop noticeably while Snag runs? (Try the Performance preset in the Quality tab if so.)
 - [ ] Switching themes in the Appearance tab

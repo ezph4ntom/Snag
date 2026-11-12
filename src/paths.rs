@@ -76,6 +76,16 @@ pub fn buffer_root() -> PathBuf {
     local_dir().join("buffer")
 }
 
+/// Recordings in progress (moved to the clips folder when saved).
+pub fn recordings_dir() -> PathBuf {
+    local_dir().join("recordings")
+}
+
+/// Cached clip thumbnails for the Live tab.
+pub fn thumbs_dir() -> PathBuf {
+    local_dir().join("thumbs")
+}
+
 pub fn log_dir() -> PathBuf {
     local_dir().join("logs")
 }

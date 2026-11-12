@@ -1,0 +1,45 @@
+{
+  "name": "Warm Ink",
+  "dark": true,
+  "colors": {
+    "background": "#15120f",
+    "panel": "#1d1814",
+    "text": "#f3ece4",
+    "text_dim": "#a99d90",
+    "accent": "#f04a24",
+    "accent_text": "#1a0d07",
+    "widget": "#2a221c",
+    "widget_hover": "#342a23",
+    "widget_active": "#3e332a",
+    "border": "#2c2620",
+    "success": "#8fd17a",
+    "warning": "#f5a524",
+    "error": "#ff6b6b",
+    "timeline": "#2a221c",
+    "timeline_selection": "#f04a244d",
+    "playhead": "#f3ece4",
+    "control": "#3e332a",
+    "preview": "#0b0908"
+  },
+  "fonts": {
+    "body": 14.0,
+    "heading": 20.0,
+    "button": 14.0,
+    "small": 12.0,
+    "mono": 13.0,
+    "family": null
+  },
+  "corner_radius": 10.0,
+  "spacing": {
+    "item": [
+      8.0,
+      6.0
+    ],
+    "button_padding": [
+      14.0,
+      7.0
+    ],
+    "window_margin": 14.0,
+    "indent": 18.0
+  }
+}

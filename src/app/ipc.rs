@@ -40,6 +40,15 @@ pub struct CoreStatus {
     pub elevated: bool,
     /// Latest notable event ("Saved Clip_... (31 s)", errors).
     pub note: String,
+    /// A long recording is running.
+    pub rec_active: bool,
+    /// Its length so far (seconds) and size (bytes).
+    pub rec_seconds: f64,
+    pub rec_bytes: u64,
+    /// Recording mode is "whole session" (the button saves, not stops).
+    pub rec_session_mode: bool,
+    /// A recording is being written to the clips folder.
+    pub rec_saving: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -74,6 +83,8 @@ pub enum UiToCore {
     /// Restart the core as administrator (so hotkeys also work while
     /// programs running as administrator are focused).
     RestartAsAdmin,
+    /// The record button: start/stop (manual mode) or save the session.
+    Record,
     /// Start/stop sending live preview frames (Live tab shown or not).
     Preview { on: bool },
     /// The Sound choices while a fader is dragged: applied to the recording

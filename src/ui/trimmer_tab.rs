@@ -19,7 +19,9 @@ use crate::trimmer::audio::AudioPlayer;
 use crate::trimmer::player::{Decoder, Frame, preview_size};
 use crate::trimmer::{ClipProbe, Output, TrimJob, TrimMode, effective_start, probe, trim};
 
-const CACHE_FRAMES: usize = 24;
+/// Recently decoded preview frames kept for instant stepping back (each
+/// ~2 MB at 960x540).
+const CACHE_FRAMES: usize = 12;
 
 struct ClipEntry {
     path: PathBuf,
@@ -167,6 +169,8 @@ impl TrimmerTab {
         if let Some(l) = self.loaded.as_mut() {
             if l.playing.is_none() && l.decoder.is_some() && l.last_activity.elapsed() > DECODER_IDLE {
                 l.decoder = None;
+                l.cache.clear();
+                l.cache.shrink_to_fit();
             }
         }
         if let Some(ex) = &mut self.export {
@@ -594,6 +598,9 @@ fn pump(ctx: &egui::Context, l: &mut Loaded) {
     if l.shown == Some(want) {
         if l.playing.is_none() && l.decoder.is_some() && l.last_activity.elapsed() > DECODER_IDLE {
             l.decoder = None; // paused and idle: free the ffmpeg process
+            // ...and the cached frames (the one on screen stays as a texture).
+            l.cache.clear();
+            l.cache.shrink_to_fit();
         }
         return;
     }
