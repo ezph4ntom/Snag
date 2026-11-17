@@ -59,6 +59,15 @@ it offers to install it with winget. It updates in place (a running Snag is
 closed first) and has a normal uninstaller; settings and clips are kept.
 The script is `installer\snag.iss`.
 
+Installed copies update themselves (`src/update.rs`): the window asks the
+GitHub API for the latest release every 6 hours, and the title bar offers
+"Update to X" when it is newer than the build's `Cargo.toml` version. A
+click downloads that release's `Snag-Setup-*.exe`, checks its SHA-256
+against GitHub's digest and runs it with `/SILENT /RELAUNCH=1`, so a release
+only needs the installer attached. Portable copies get the release page
+opened instead. To see the button without a newer release, start the
+window as an older version: `snag.exe --ui --pretend-version 0.1.0`.
+
 ### Portable package (for testers)
 
 ```powershell
@@ -221,6 +230,7 @@ ffmpeg details that matter (all measured; see comments in `src/encode/ffmpeg.rs`
 | `sound.rs` | clip sound via `PlaySound` (no audio thread while idle) | 3 hotkeys |
 | `trimmer/`, `ui/trimmer_tab.rs` | probe, preview decoder, fast/precise export; trimmer UI | 4 trimmer |
 | `library.rs`, `ui/library_tab.rs` | clip library (favorites, collections, upload records in `library.json`), cards, thumbnails, Uploads list, Streamable login | library |
+| `update.rs` | GitHub release check, installer download + SHA-256 check, silent install | updates |
 | `upload/` | Streamable web-flow uploader, Litterbox, multipart HTTP over Windows TLS, Credential Manager | uploads |
 | `ui/search.rs` | the settings search (keywords and synonyms per section) | settings |
 | `themes/`, `ui/appearance_tab.rs` | JSON themes, egui styling, hot reload; the theme picker in Settings → Appearance | 5 themes |

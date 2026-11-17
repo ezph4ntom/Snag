@@ -9,6 +9,8 @@
 ;   it to record).
 ; * Closes a running Snag before updating; settings (%APPDATA%\Snag) and
 ;   clips are kept on update and uninstall.
+; * Snag's own updater runs it with /SILENT /RELAUNCH=1: it updates in
+;   place and starts Snag again afterwards.
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"
@@ -64,12 +66,19 @@ Name: "{autodesktop}\Snag"; Filename: "{app}\snag.exe"; Tasks: desktopicon; Comm
 
 [Run]
 Filename: "{app}\snag.exe"; Description: "Start Snag now"; Flags: nowait postinstall skipifsilent
+; After an update from inside Snag (silent), start it again.
+Filename: "{app}\snag.exe"; Flags: nowait; Check: Relaunch
 
 [UninstallRun]
 ; Ask a running Snag to quit (cleanly stops recording) before files go.
 Filename: "{app}\snag.exe"; Parameters: "--quit"; Flags: runhidden waituntilterminated; RunOnceId: "QuitSnag"
 
 [Code]
+function Relaunch: Boolean;
+begin
+  Result := WizardSilent and (ExpandConstant('{param:RELAUNCH|0}') = '1');
+end;
+
 function FfmpegMissing: Boolean;
 begin
   { On PATH, or in a bin folder next to the app (portable builds). }

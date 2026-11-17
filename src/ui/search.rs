@@ -80,7 +80,8 @@ pub const ENTRIES: &[Entry] = &[
         hit: Hit::Settings(SettingsSection::Startup),
         tab: "Settings",
         title: "Startup",
-        keywords: "startup start with windows boot login sign in autostart auto start launch tray background run on startup",
+        keywords: "startup start with windows boot login sign in autostart auto start launch tray background run on startup \
+                   update updates updater new version upgrade release github check latest",
     },
     Entry {
         hit: Hit::Settings(SettingsSection::Window),

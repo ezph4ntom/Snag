@@ -32,6 +32,7 @@ pub mod themes;
 pub mod trimmer;
 pub mod tune;
 pub mod ui;
+pub mod update;
 pub mod upload;
 pub mod verify;
 pub mod win;

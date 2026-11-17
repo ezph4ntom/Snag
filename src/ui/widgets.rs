@@ -101,6 +101,34 @@ pub fn status_pill(ui: &mut egui::Ui, theme: &Theme, dot: Color32, text: &str, t
     resp
 }
 
+/// The title bar's "Update to 0.7.0" button: tinted, outlined, with a
+/// download arrow; `fraction` fills it while downloading.
+pub fn update_pill(ui: &mut egui::Ui, theme: &Theme, text: &str, color: Color32, fraction: Option<f32>) -> Response {
+    let font = egui::FontId::proportional(theme.fonts.body - 1.0);
+    let galley = ui.painter().layout_no_wrap(text.to_string(), font, color);
+    let size = Vec2::new(galley.size().x + 40.0, 28.0);
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    let hot = resp.hovered() && fraction.is_none();
+    let p = ui.painter();
+    let radius = CornerRadius::same(14);
+    p.rect_filled(rect, radius, color.gamma_multiply(if hot { 0.22 } else { 0.12 }));
+    if let Some(f) = fraction {
+        let w = (rect.width() * f.clamp(0.0, 1.0)).max(1.0);
+        let fill = Rect::from_min_size(rect.min, vec2(w, rect.height()));
+        p.with_clip_rect(fill).rect_filled(rect, radius, color.gamma_multiply(0.22));
+    }
+    p.rect_stroke(rect, radius, Stroke::new(1.0, color.gamma_multiply(if hot { 0.9 } else { 0.6 })), egui::StrokeKind::Inside);
+    // A circled arrow pointing down.
+    let ic = pos2(rect.left() + 17.0, rect.center().y);
+    let s = Stroke::new(1.4, color);
+    p.circle_stroke(ic, 6.5, s);
+    p.line_segment([ic + vec2(0.0, -3.5), ic + vec2(0.0, 3.0)], s);
+    p.line_segment([ic + vec2(-2.8, 0.4), ic + vec2(0.0, 3.2)], s);
+    p.line_segment([ic + vec2(2.8, 0.4), ic + vec2(0.0, 3.2)], s);
+    p.galley(pos2(rect.left() + 29.0, rect.center().y - galley.size().y / 2.0), galley, color);
+    resp
+}
+
 /// `1:02:03` / `4:05`.
 pub fn fmt_duration(seconds: f64) -> String {
     let s = seconds.max(0.0) as u64;
@@ -164,7 +192,9 @@ pub fn search_box(ui: &mut egui::Ui, theme: &Theme, text: &mut String, width: f3
         .align(egui::Align2::LEFT_CENTER)
         .desired_width(width - 42.0);
     let field = Rect::from_min_max(pos2(rect.left() + 30.0, rect.top() + 2.0), pos2(rect.right() - 30.0, rect.bottom() - 2.0));
-    let resp = ui.put(field, edit);
+    // A child ui, so the field doesn't move the cursor back inside the box
+    // (in a right-to-left row the next widget would overlap it).
+    let resp = ui.new_child(egui::UiBuilder::new().id_salt(hint).max_rect(field).layout(egui::Layout::left_to_right(egui::Align::Center))).add(edit);
     // An "x" that clears the text.
     if !text.is_empty() {
         let xc = pos2(rect.right() - 16.0, rect.center().y);

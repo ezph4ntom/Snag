@@ -47,6 +47,8 @@
 
 **Make it yours.** Five themes, a tab bar you can drag to any edge, an icons-only mode, adjustable size, clips up to 15 minutes long, and a settings search that finds anything (try "mic" or "monitor").
 
+**Updates in one click.** When a new version is out, **Update to …** appears in the title bar. Click it and Snag downloads the installer from GitHub, checks it, installs it and starts again.
+
 ## Get started
 
 1. **[Download Snag-Setup.exe](https://github.com/ezph4ntom/Snag/releases/latest)** and run it. No administrator rights needed.

@@ -80,6 +80,8 @@ pub struct UiArgs {
     pub tab: Option<String>,
     pub clip: Option<PathBuf>,
     pub minimized: bool,
+    /// Testing the updater: act as if this were an older version.
+    pub pretend_version: Option<String>,
 }
 
 impl UiArgs {
@@ -91,6 +93,7 @@ impl UiArgs {
                 "--tab" => out.tab = it.next().cloned(),
                 "--clip" => out.clip = it.next().map(PathBuf::from),
                 "--minimized" => out.minimized = true,
+                "--pretend-version" => out.pretend_version = it.next().cloned(),
                 _ => {}
             }
         }
@@ -131,6 +134,8 @@ struct App {
     last_theme_check: Instant,
     trimmer: trimmer_tab::TrimmerTab,
     library: library_tab::LibraryTab,
+    /// New versions from GitHub (the "Update to X" button).
+    updater: crate::update::Updater,
     /// Closing was asked while uploads run: confirm first.
     confirm_close: bool,
     close_anyway: bool,
@@ -168,6 +173,7 @@ pub fn run(args: UiArgs) -> Result<()> {
     let (mut settings, _) = Settings::load();
     let tab = Tab::parse(args.tab.as_deref().unwrap_or("live"));
     let open_uploads = args.tab.as_deref() == Some("uploads");
+    let pretend_version = args.pretend_version.clone();
     let open_appearance = matches!(args.tab.as_deref(), Some("appearance" | "themes"));
     // Themes were renamed (v0.5): a theme that no longer exists becomes the
     // default, Daylight.
@@ -283,6 +289,7 @@ pub fn run(args: UiArgs) -> Result<()> {
                 },
                 confirm_close: false,
                 close_anyway: false,
+                updater: crate::update::Updater::new(pretend_version),
             }))
         }),
     )
@@ -701,6 +708,35 @@ impl App {
         });
     }
 
+    /// "Update to 0.7.0" left of the search box, while a newer release is
+    /// out. Returns true when clicked.
+    fn update_button(ui: &mut egui::Ui, theme: &crate::themes::Theme, phase: &crate::update::Phase, version: &str, opens_page: bool) -> bool {
+        use crate::update::Phase;
+        let c = &theme.colors;
+        let (text, color, tip, fraction) = match phase {
+            Phase::UpToDate => return false,
+            Phase::Available => (
+                format!("Update to {version}"),
+                c.success.0,
+                if opens_page {
+                    format!("Snag {version} is out (you have {}). Click to open its download page.", crate::update::current())
+                } else {
+                    format!("Snag {version} is out (you have {}). Click to download and install it; Snag restarts by itself.", crate::update::current())
+                },
+                None,
+            ),
+            Phase::Downloading(f) => (format!("Downloading {:.0}%", f * 100.0), c.success.0, "Downloading the update from GitHub".to_string(), Some(*f)),
+            Phase::Installing => ("Installing update".to_string(), c.success.0, "Snag closes and starts again when the update is installed".to_string(), None),
+            Phase::Failed(e) => (format!("Update to {version} failed"), c.error.0, format!("{e}\n\nClick to try again."), None),
+        };
+        let r = widgets::update_pill(ui, theme, &text, color, fraction).on_hover_text(tip);
+        if matches!(phase, Phase::Available | Phase::Failed(_)) {
+            r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+        } else {
+            false
+        }
+    }
+
     /// The status badge in the title bar: recording / buffer state.
     /// Returns true when the replay-buffer badge was clicked (switches
     /// between "120 s" and "2:00").
@@ -788,6 +824,10 @@ impl eframe::App for App {
         self.theme_hot_reload(ctx);
         self.trimmer.poll_background(&self.shared.settings);
         self.library.poll_background(ctx);
+        self.updater.poll(self.shared.settings.ui.check_updates);
+        if self.updater.busy() {
+            ctx.request_repaint_after(Duration::from_millis(200));
+        }
         if let Some(t) = self.library.toasts.pop() {
             self.toast = Some((t, Instant::now()));
             self.library.toasts.clear();
@@ -837,6 +877,14 @@ impl eframe::App for App {
         let mut search = std::mem::take(&mut self.search);
         let badge_minutes = self.shared.settings.ui.badge_minutes;
         let mut toggle_badge = false;
+        let update_phase = if self.shared.settings.ui.check_updates || self.updater.busy() {
+            self.updater.phase()
+        } else {
+            crate::update::Phase::UpToDate
+        };
+        let update_version = self.updater.available().map(|r| r.version.clone()).unwrap_or_default();
+        let update_opens_page = self.updater.opens_page();
+        let mut start_update = false;
         egui::Panel::top("title")
             .exact_size(chrome::TITLE_H)
             .frame(egui::Frame::new().fill(panel).stroke(egui::Stroke::NONE))
@@ -859,11 +907,18 @@ impl eframe::App for App {
                         ui.add_space(10.0);
                         widgets::search_box(ui, &theme, &mut search, 240.0, focus_search, "Search settings")
                             .on_hover_text("Search all settings (Ctrl+F)");
+                        ui.add_space(10.0);
+                        if Self::update_button(ui, &theme, &update_phase, &update_version, update_opens_page) {
+                            start_update = true;
+                        }
                     },
                 );
                 ui.painter().line_segment([rect.left_bottom(), rect.right_bottom()], border);
             });
         self.search = search;
+        if start_update {
+            self.updater.start();
+        }
         if toggle_badge {
             self.shared.settings.ui.badge_minutes = !badge_minutes;
             self.shared.mark_dirty();

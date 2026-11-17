@@ -286,13 +286,27 @@ impl SettingsTab {
         let before = on;
         let error_color = shared.theme.colors.error.0;
         let error = self.startup_error.clone();
+        let mut check_updates = shared.settings.ui.check_updates;
         section(ui, shared, "Startup", |ui| {
             ui.checkbox(&mut on, "Start Snag with Windows (quietly, in the tray)");
             ui.label(RichText::new("Snag starts when you sign in, with no window, so clips are ready from your first game.").small());
+            ui.add_space(6.0);
+            ui.checkbox(&mut check_updates, "Check for updates");
+            ui.label(
+                RichText::new(format!(
+                    "Asks GitHub for new versions now and then; a newer one shows as \"Update to\" in the title bar. This is Snag {}.",
+                    crate::update::current()
+                ))
+                .small(),
+            );
             if let Some(e) = &error {
                 ui.label(RichText::new(e).color(error_color).small());
             }
         });
+        if check_updates != shared.settings.ui.check_updates {
+            shared.settings.ui.check_updates = check_updates;
+            shared.mark_dirty();
+        }
         if on != before {
             match crate::win::set_start_with_windows(on) {
                 Ok(()) => {

@@ -80,11 +80,13 @@ pub struct UiSettings {
     pub live_preview: bool,
     /// The title bar shows the buffered time as 2:00 instead of 120 s.
     pub badge_minutes: bool,
+    /// Ask GitHub for new versions and offer them in the title bar.
+    pub check_updates: bool,
 }
 
 impl Default for UiSettings {
     fn default() -> Self {
-        Self { scale: 1.0, tab_dock: TabDock::Top, icon_tabs: false, live_preview: true, badge_minutes: false }
+        Self { scale: 1.0, tab_dock: TabDock::Top, icon_tabs: false, live_preview: true, badge_minutes: false, check_updates: true }
     }
 }
 
