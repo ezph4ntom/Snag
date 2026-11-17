@@ -195,11 +195,6 @@ impl WgcCapture {
     pub fn is_closed(&self) -> bool {
         self.shared.closed.load(Ordering::Relaxed)
     }
-
-    /// Total frames delivered by WGC (for stats).
-    pub fn frames_arrived(&self) -> u64 {
-        self.shared.arrived.load(Ordering::Relaxed)
-    }
 }
 
 impl Drop for WgcCapture {

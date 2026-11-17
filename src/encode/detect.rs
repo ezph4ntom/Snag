@@ -75,8 +75,3 @@ pub fn probe_all() -> Vec<Probe> {
         .collect();
     handles.into_iter().filter_map(|h| h.join().ok()).collect()
 }
-
-/// All working encoders, in preference order (hardware first).
-pub fn available_encoders() -> Vec<EncoderKind> {
-    probe_all().into_iter().filter(|p| p.works).map(|p| p.kind).collect()
-}

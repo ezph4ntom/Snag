@@ -33,7 +33,11 @@ try {
     if (Test-Path $out) { Remove-Item -Recurse -Force $out }
     New-Item -ItemType Directory -Force $out | Out-Null
     Copy-Item "target\release\snag.exe" $out
-    Copy-Item -Recurse "assets" $out
+    # The fonts are built into snag.exe; only their license ships. The clip
+    # sound is read from disk (it's the default "custom" sound).
+    New-Item -ItemType Directory -Force "$out\assets\fonts" | Out-Null
+    Copy-Item "assets\fonts\DMSans-OFL.txt" "$out\assets\fonts"
+    Copy-Item -Recurse "assets\sounds" "$out\assets"
     Copy-Item -Recurse "themes" $out
     Copy-Item "README.md", "TESTING.md" $out
     if ($WithFfmpeg) {

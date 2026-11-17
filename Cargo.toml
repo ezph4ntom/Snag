@@ -1,6 +1,6 @@
 [package]
 name = "snag"
-version = "0.6.1"
+version = "0.6.2"
 edition = "2024"
 description = "Lightweight game-clipping app for Windows (replay buffer, screenshots, trimmer)"
 
@@ -89,8 +89,10 @@ features = [
 
 [profile.release]
 opt-level = 3
-lto = "thin"
-codegen-units = 4
+# Whole-program optimization: ~8% smaller exe than thin LTO, a little
+# faster, for about a minute more build time.
+lto = "fat"
+codegen-units = 1
 strip = "symbols"
 panic = "unwind"   # keep unwinding so a panicking worker thread can be logged and restarted
 

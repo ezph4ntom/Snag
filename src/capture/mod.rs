@@ -44,10 +44,6 @@ pub struct MonitorInfo {
 }
 
 impl MonitorInfo {
-    pub fn hmonitor(&self) -> HMONITOR {
-        HMONITOR(self.handle as *mut _)
-    }
-
     /// "DISPLAY2  2560x1440 @ 144 Hz (primary)"
     pub fn label(&self) -> String {
         format!(

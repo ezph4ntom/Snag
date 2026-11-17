@@ -53,6 +53,10 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 Name: "startup"; Description: "Start Snag when Windows starts"; GroupDescription: "Shortcuts:"; Flags: unchecked
 Name: "ffmpeg"; Description: "Install ffmpeg (Snag needs it to record; downloads about 100 MB with winget)"; GroupDescription: "Required:"; Check: FfmpegMissing
 
+[InstallDelete]
+; Older versions shipped the fonts next to the exe; they are built in now.
+Type: files; Name: "{app}\assets\fonts\*.ttf"
+
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 
