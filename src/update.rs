@@ -20,6 +20,16 @@ use serde::{Deserialize, Serialize};
 use crate::upload::http::Progress;
 
 const REPO: &str = "ezph4ntom/Snag";
+
+/// The project's GitHub page.
+pub fn source_url() -> String {
+    format!("https://github.com/{REPO}")
+}
+
+/// This version's release notes on GitHub.
+pub fn release_notes_url() -> String {
+    format!("https://github.com/{REPO}/releases/tag/v{}", current())
+}
 /// How often GitHub is asked (it allows 60 requests an hour per address).
 const CHECK_EVERY: Duration = Duration::from_secs(6 * 3600);
 /// The installer is a few MB; anything far bigger is not ours.
@@ -221,6 +231,16 @@ pub enum Phase {
     Failed(String),
 }
 
+/// What "Check for updates" (Settings > About) found this session.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CheckStatus {
+    NotChecked,
+    Checking,
+    UpToDate,
+    Available(String),
+    Failed(String),
+}
+
 enum Msg {
     Checked(Result<Release, String>),
     Downloaded(Result<PathBuf, String>),
@@ -233,6 +253,10 @@ pub struct Updater {
     downloading: bool,
     installing: bool,
     error: Option<String>,
+    /// A check is running.
+    checking: bool,
+    /// A check finished this session (Ok) or failed (Err).
+    checked: Option<Result<(), String>>,
     progress: Arc<Progress>,
     next_check: Instant,
     /// Pretend to be this version (testing: `--pretend-version 0.5.0`).
@@ -250,13 +274,16 @@ impl Updater {
             downloading: false,
             installing: false,
             error: None,
+            checking: false,
+            checked: None,
             progress: Arc::default(),
             next_check,
             pretend,
         }
     }
 
-    fn version(&self) -> &str {
+    /// This build's version (or the pretended one when testing).
+    pub fn version(&self) -> &str {
         self.pretend.as_deref().unwrap_or(current())
     }
 
@@ -285,6 +312,8 @@ impl Updater {
             match rx.try_recv() {
                 Ok(Msg::Checked(r)) => {
                     self.busy = None;
+                    self.checking = false;
+                    self.checked = Some(r.as_ref().map(|_| ()).map_err(Clone::clone));
                     match r {
                         Ok(release) => {
                             let cache = Cache { checked_at: crate::library::now(), release: Some(release.clone()) };
@@ -319,17 +348,46 @@ impl Updater {
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.busy = None;
                     self.downloading = false;
+                    self.checking = false;
                 }
             }
             return;
         }
         if enabled && !self.installing && Instant::now() >= self.next_check {
-            self.next_check = Instant::now() + CHECK_EVERY;
-            let (tx, rx) = mpsc::channel();
-            std::thread::spawn(move || {
-                let _ = tx.send(Msg::Checked(fetch_latest().map_err(|e| format!("{e:#}"))));
-            });
-            self.busy = Some(rx);
+            self.spawn_check();
+        }
+    }
+
+    fn spawn_check(&mut self) {
+        self.next_check = Instant::now() + CHECK_EVERY;
+        self.checking = true;
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(Msg::Checked(fetch_latest().map_err(|e| format!("{e:#}"))));
+        });
+        self.busy = Some(rx);
+    }
+
+    /// "Check for updates": asks GitHub now (also when automatic checks
+    /// are off).
+    pub fn check_now(&mut self) {
+        if self.busy.is_none() && !self.installing {
+            self.checked = None;
+            self.spawn_check();
+        }
+    }
+
+    pub fn check_status(&self) -> CheckStatus {
+        if self.checking {
+            return CheckStatus::Checking;
+        }
+        match &self.checked {
+            None => CheckStatus::NotChecked,
+            Some(Err(e)) => CheckStatus::Failed(e.clone()),
+            Some(Ok(())) => match self.available() {
+                Some(r) => CheckStatus::Available(r.version.clone()),
+                None => CheckStatus::UpToDate,
+            },
         }
     }
 
@@ -348,6 +406,7 @@ impl Updater {
             }
         };
         // A check still running is simply dropped.
+        self.checking = false;
         self.error = None;
         self.downloading = true;
         self.progress = Arc::default();

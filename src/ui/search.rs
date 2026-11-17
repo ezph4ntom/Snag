@@ -77,6 +77,13 @@ pub const ENTRIES: &[Entry] = &[
                    fast precise",
     },
     Entry {
+        hit: Hit::Settings(SettingsSection::About),
+        tab: "Settings",
+        title: "About",
+        keywords: "about version current build commit release notes changelog what's new whats new source code github \
+                   check for updates update log logs log files bug report",
+    },
+    Entry {
         hit: Hit::Settings(SettingsSection::Startup),
         tab: "Settings",
         title: "Startup",

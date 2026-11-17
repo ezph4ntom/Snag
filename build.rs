@@ -18,6 +18,7 @@ use std::path::PathBuf;
 fn main() {
     println!("cargo:rerun-if-changed=src/brand.rs");
     println!("cargo:rerun-if-changed=build.rs");
+    build_info();
 
     let out = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"));
     let ico = out.join("snag.ico");
@@ -61,4 +62,33 @@ END
     if let Err(e) = embed_resource::compile(&rc_path, embed_resource::NONE).manifest_optional() {
         println!("cargo:warning=exe icon not embedded ({e}); install the Windows SDK to get it");
     }
+}
+
+/// The commit and its date, shown in Settings > About
+/// (SNAG_BUILD_COMMIT = "0df40a3", SNAG_BUILD_DATE = "17 Nov 2026").
+fn build_info() {
+    // Re-run when a commit is made or the branch changes.
+    println!("cargo:rerun-if-changed=.git/HEAD");
+    println!("cargo:rerun-if-changed=.git/refs/heads");
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    let commit = git(&["rev-parse", "--short=7", "HEAD"]).unwrap_or_else(|| "unknown".into());
+    let date = git(&["log", "-1", "--format=%cs"])
+        .and_then(|d| {
+            // "2026-11-17" -> "17 Nov 2026"
+            let mut p = d.split('-');
+            let (y, m, day) = (p.next()?, p.next()?.parse::<usize>().ok()?, p.next()?.parse::<u32>().ok()?);
+            let months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+            Some(format!("{day} {} {y}", months.get(m.checked_sub(1)?)?))
+        })
+        .unwrap_or_else(|| "unknown date".into());
+    println!("cargo:rustc-env=SNAG_BUILD_COMMIT={commit}");
+    println!("cargo:rustc-env=SNAG_BUILD_DATE={date}");
 }

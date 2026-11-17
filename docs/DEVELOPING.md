@@ -230,7 +230,7 @@ ffmpeg details that matter (all measured; see comments in `src/encode/ffmpeg.rs`
 | `sound.rs` | clip sound via `PlaySound` (no audio thread while idle) | 3 hotkeys |
 | `trimmer/`, `ui/trimmer_tab.rs` | probe, preview decoder, fast/precise export; trimmer UI | 4 trimmer |
 | `library.rs`, `ui/library_tab.rs` | clip library (favorites, collections, upload records in `library.json`), cards, thumbnails, Uploads list, Streamable login | library |
-| `update.rs` | GitHub release check, installer download + SHA-256 check, silent install | updates |
+| `update.rs`, `ui/about.rs` | GitHub release check, installer download + SHA-256 check, silent install; Settings → About (version, build commit from `build.rs`, links) | updates |
 | `upload/` | Streamable web-flow uploader, Litterbox, multipart HTTP over Windows TLS, Credential Manager | uploads |
 | `ui/search.rs` | the settings search (keywords and synonyms per section) | settings |
 | `themes/`, `ui/appearance_tab.rs` | JSON themes, egui styling, hot reload; the theme picker in Settings → Appearance | 5 themes |

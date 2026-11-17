@@ -71,6 +71,8 @@ pub enum SettingsSection {
     Window,
     /// The theme picker (drawn by the appearance code).
     Theme,
+    /// Version, build and links (drawn by the about code).
+    About,
 }
 
 /// The categories on the left of the Settings tab.
@@ -83,10 +85,11 @@ pub enum Category {
     Saving,
     Uploads,
     Appearance,
+    About,
 }
 
 impl Category {
-    pub const ALL: [Category; 7] = [
+    pub const ALL: [Category; 8] = [
         Category::General,
         Category::Recording,
         Category::Capture,
@@ -94,6 +97,7 @@ impl Category {
         Category::Saving,
         Category::Uploads,
         Category::Appearance,
+        Category::About,
     ];
 
     pub fn label(self) -> &'static str {
@@ -105,6 +109,7 @@ impl Category {
             Category::Saving => "Saving clips",
             Category::Uploads => "Uploads",
             Category::Appearance => "Appearance",
+            Category::About => "About",
         }
     }
 
@@ -118,6 +123,7 @@ impl Category {
             Category::Saving => &[S::Folders, S::AfterClip, S::ClipSound],
             Category::Uploads => &[S::Uploads],
             Category::Appearance => &[S::Theme],
+            Category::About => &[S::About],
         }
     }
 }
@@ -177,13 +183,23 @@ impl SettingsTab {
                         self.category = Some(c);
                     }
                 }
+                // The version, always in view at the bottom.
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                    ui.add_space(6.0);
+                    let v = egui::Label::new(RichText::new(format!("Snag {}", crate::update::current())).color(theme.colors.text_dim.0).small())
+                        .sense(egui::Sense::click());
+                    let r = ui.add(v).on_hover_text(format!("Build {} \u{b7} {}\nClick for About", super::about::BUILD_COMMIT, super::about::BUILD_DATE));
+                    if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                        self.category = Some(Category::About);
+                    }
+                });
             });
         egui::CentralPanel::no_frame().show(ui, |ui| {
             egui::ScrollArea::vertical().id_salt(current).auto_shrink([false, false]).show(ui, |ui| {
                 ui.set_max_width(760.0);
                 for &which in current.sections() {
                     match which {
-                        SettingsSection::Uploads | SettingsSection::Theme => other(which, ui, shared),
+                        SettingsSection::Uploads | SettingsSection::Theme | SettingsSection::About => other(which, ui, shared),
                         _ => self.section_ui(which, ui, shared),
                     }
                 }
@@ -221,7 +237,7 @@ impl SettingsTab {
             SettingsSection::ClipSound => self.sound_section(ui, shared),
             SettingsSection::AfterClip => self.after_clip_section(ui, shared),
             SettingsSection::Startup => self.startup_section(ui, shared),
-            SettingsSection::Uploads | SettingsSection::Theme => {} // drawn elsewhere (see ui())
+            SettingsSection::Uploads | SettingsSection::Theme | SettingsSection::About => {} // drawn elsewhere (see ui())
             SettingsSection::Window => self.window_section(ui, shared),
         }
     }

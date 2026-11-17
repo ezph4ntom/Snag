@@ -6,6 +6,7 @@
 //! (see `app::ipc`). Settings are saved straight to settings.json and the
 //! core is told to reload them.
 
+mod about;
 mod appearance_tab;
 mod chrome;
 mod dialogs;
@@ -48,7 +49,7 @@ impl Tab {
             "sound" | "audio" => Tab::Sound,
             "settings" => Tab::Settings,
             "quality" => Tab::Quality,
-            "appearance" | "themes" => Tab::Settings,
+            "appearance" | "themes" | "about" => Tab::Settings,
             _ => Tab::Clips,
         }
     }
@@ -136,6 +137,8 @@ struct App {
     library: library_tab::LibraryTab,
     /// New versions from GitHub (the "Update to X" button).
     updater: crate::update::Updater,
+    /// Settings > About.
+    about: about::About,
     /// Closing was asked while uploads run: confirm first.
     confirm_close: bool,
     close_anyway: bool,
@@ -175,6 +178,7 @@ pub fn run(args: UiArgs) -> Result<()> {
     let open_uploads = args.tab.as_deref() == Some("uploads");
     let pretend_version = args.pretend_version.clone();
     let open_appearance = matches!(args.tab.as_deref(), Some("appearance" | "themes"));
+    let open_about = args.tab.as_deref() == Some("about");
     // Themes were renamed (v0.5): a theme that no longer exists becomes the
     // default, Daylight.
     let theme_now = crate::themes::existing_or_default(&settings.theme);
@@ -264,6 +268,9 @@ pub fn run(args: UiArgs) -> Result<()> {
                     if open_appearance {
                         s.show_category(settings_tab::Category::Appearance);
                     }
+                    if open_about {
+                        s.show_category(settings_tab::Category::About);
+                    }
                     s
                 },
                 live: live_tab::LiveTab::default(),
@@ -290,6 +297,7 @@ pub fn run(args: UiArgs) -> Result<()> {
                 confirm_close: false,
                 close_anyway: false,
                 updater: crate::update::Updater::new(pretend_version),
+                about: about::About::default(),
             }))
         }),
     )
@@ -641,6 +649,7 @@ impl App {
     fn search_results(&mut self, ui: &mut egui::Ui) {
         let query = self.search.trim().to_string();
         let hits = search::search(&query);
+        let mut show_hotkeys = false;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.set_max_width(900.0);
             ui.horizontal(|ui| {
@@ -664,6 +673,11 @@ impl App {
                 ui.add_space(2.0);
                 match h.hit {
                     search::Hit::Settings(settings_tab::SettingsSection::Uploads) => self.library.settings_section(ui, &mut self.shared),
+                    search::Hit::Settings(settings_tab::SettingsSection::About) => {
+                        if self.about.section(ui, &self.shared, &mut self.updater) {
+                            show_hotkeys = true;
+                        }
+                    }
                     search::Hit::Settings(s) => self.settings_tab.section_ui(s, ui, &mut self.shared),
                     search::Hit::SoundRecording => self.sound.recording_section(ui, &mut self.shared),
                     search::Hit::SoundSources => self.sound.sources_section(ui, &mut self.shared),
@@ -674,6 +688,11 @@ impl App {
                 }
             }
         });
+        if show_hotkeys {
+            self.search.clear();
+            self.tab = Tab::Settings;
+            self.settings_tab.show_category(settings_tab::Category::Hotkeys);
+        }
     }
 
     fn close_dialog(&mut self, ctx: &egui::Context) {
@@ -710,7 +729,7 @@ impl App {
 
     /// "Update to 0.7.0" left of the search box, while a newer release is
     /// out. Returns true when clicked.
-    fn update_button(ui: &mut egui::Ui, theme: &crate::themes::Theme, phase: &crate::update::Phase, version: &str, opens_page: bool) -> bool {
+    fn update_button(ui: &mut egui::Ui, theme: &crate::themes::Theme, phase: &crate::update::Phase, version: &str, this_version: &str, opens_page: bool) -> bool {
         use crate::update::Phase;
         let c = &theme.colors;
         let (text, color, tip, fraction) = match phase {
@@ -719,9 +738,9 @@ impl App {
                 format!("Update to {version}"),
                 c.success.0,
                 if opens_page {
-                    format!("Snag {version} is out (you have {}). Click to open its download page.", crate::update::current())
+                    format!("Snag {version} is out (you have {this_version}). Click to open its download page.")
                 } else {
-                    format!("Snag {version} is out (you have {}). Click to download and install it; Snag restarts by itself.", crate::update::current())
+                    format!("Snag {version} is out (you have {this_version}). Click to download and install it; Snag restarts by itself.")
                 },
                 None,
             ),
@@ -884,6 +903,7 @@ impl eframe::App for App {
         };
         let update_version = self.updater.available().map(|r| r.version.clone()).unwrap_or_default();
         let update_opens_page = self.updater.opens_page();
+        let this_version = self.updater.version().to_string();
         let mut start_update = false;
         egui::Panel::top("title")
             .exact_size(chrome::TITLE_H)
@@ -908,7 +928,7 @@ impl eframe::App for App {
                         widgets::search_box(ui, &theme, &mut search, 240.0, focus_search, "Search settings")
                             .on_hover_text("Search all settings (Ctrl+F)");
                         ui.add_space(10.0);
-                        if Self::update_button(ui, &theme, &update_phase, &update_version, update_opens_page) {
+                        if Self::update_button(ui, &theme, &update_phase, &update_version, &this_version, update_opens_page) {
                             start_update = true;
                         }
                     },
@@ -972,12 +992,19 @@ impl eframe::App for App {
                 Tab::Settings => {
                     let library = &mut self.library;
                     let appearance = &mut self.appearance;
+                    let about = &mut self.about;
+                    let updater = &mut self.updater;
                     let theme_error = self.theme_error.as_deref();
+                    let mut show_hotkeys = false;
                     self.settings_tab.ui(ui, &mut self.shared, &mut |which, ui, shared| match which {
                         settings_tab::SettingsSection::Uploads => library.settings_section(ui, shared),
                         settings_tab::SettingsSection::Theme => appearance.theme_section(ui, shared, theme_error),
+                        settings_tab::SettingsSection::About => show_hotkeys |= about.section(ui, shared, updater),
                         _ => {}
                     });
+                    if show_hotkeys {
+                        self.settings_tab.show_category(settings_tab::Category::Hotkeys);
+                    }
                 }
                 Tab::Quality => self.quality.ui(ui, &mut self.shared),
                 }
