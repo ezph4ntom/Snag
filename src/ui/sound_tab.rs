@@ -289,51 +289,63 @@ impl SoundTab {
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui, shared: &mut Shared) {
-        let snap = self.snapshot();
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            ui.set_max_width(900.0);
+            self.recording_section(ui, shared);
+            self.sources_section(ui, shared);
+        });
+    }
+
+    /// "Record sound in clips" and the AAC quality.
+    pub fn recording_section(&mut self, ui: &mut egui::Ui, shared: &mut Shared) {
         let mut a = shared.settings.audio.clone();
         let status = shared.status.clone().unwrap_or_default();
         let warn = shared.theme.colors.warning.0;
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            ui.set_max_width(900.0);
-            section(ui, shared, "Recording", |ui| {
-                ui.horizontal(|ui| {
-                    ui.checkbox(&mut a.record_pc_audio, "Record sound in clips");
-                    ui.add_enabled_ui(a.record_pc_audio, |ui| {
-                        egui::ComboBox::from_id_salt("audio_kbps")
-                            .selected_text(format!("{} kbps AAC", a.bitrate_kbps))
-                            .show_ui(ui, |ui| {
-                                for k in [128, 160, 192, 256, 320] {
-                                    ui.selectable_value(&mut a.bitrate_kbps, k, format!("{k} kbps AAC"));
-                                }
-                            });
-                    });
+        section(ui, shared, "Recording", |ui| {
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut a.record_pc_audio, "Record sound in clips");
+                ui.add_enabled_ui(a.record_pc_audio, |ui| {
+                    egui::ComboBox::from_id_salt("audio_kbps")
+                        .selected_text(format!("{} kbps AAC", a.bitrate_kbps))
+                        .show_ui(ui, |ui| {
+                            for k in [128, 160, 192, 256, 320] {
+                                ui.selectable_value(&mut a.bitrate_kbps, k, format!("{k} kbps AAC"));
+                            }
+                        });
                 });
-                if shared.connected && status.recording && status.audio {
-                    let now = if status.audio_sources.is_empty() { "nothing".into() } else { status.audio_sources.join(", ") };
-                    ui.label(dim(shared, format!("Recording now: {now}")).small());
-                }
-                if let Some(n) = &status.audio_note {
-                    ui.label(RichText::new(n).color(warn).small());
-                }
             });
-            ui.add_enabled_ui(a.record_pc_audio, |ui| {
-                section(ui, shared, "Sources", |ui| {
-                    ui.checkbox(&mut a.whole_pc, "Whole PC audio (all outputs)");
-                    let hint = if a.whole_pc {
-                        "Everything on every output. Untick to pick apps one by one."
-                    } else {
-                        "Only the ticked apps (and the microphone) are recorded."
-                    };
-                    ui.label(dim(shared, hint).small());
-                    ui.add_space(10.0);
-                    let rows = Self::rows(&snap, &a);
-                    if rows.len() == 1 && !a.whole_pc {
-                        ui.label(dim(shared, "No apps are playing sound right now. Start one and it shows up here."));
-                    }
-                    for row in &rows {
-                        Self::full_row(ui, shared, &snap, &mut a, row);
-                    }
-                });
+            if shared.connected && status.recording && status.audio {
+                let now = if status.audio_sources.is_empty() { "nothing".into() } else { status.audio_sources.join(", ") };
+                ui.label(dim(shared, format!("Recording now: {now}")).small());
+            }
+            if let Some(n) = &status.audio_note {
+                ui.label(RichText::new(n).color(warn).small());
+            }
+        });
+        self.commit(shared, a);
+    }
+
+    /// Whole PC / per-app, and a row per source.
+    pub fn sources_section(&mut self, ui: &mut egui::Ui, shared: &mut Shared) {
+        let snap = self.snapshot();
+        let mut a = shared.settings.audio.clone();
+        ui.add_enabled_ui(a.record_pc_audio, |ui| {
+            section(ui, shared, "Sources", |ui| {
+                ui.checkbox(&mut a.whole_pc, "Whole PC audio (all outputs)");
+                let hint = if a.whole_pc {
+                    "Everything on every output. Untick to pick apps one by one."
+                } else {
+                    "Only the ticked apps (and the microphone) are recorded."
+                };
+                ui.label(dim(shared, hint).small());
+                ui.add_space(10.0);
+                let rows = Self::rows(&snap, &a);
+                if rows.len() == 1 && !a.whole_pc {
+                    ui.label(dim(shared, "No apps are playing sound right now. Start one and it shows up here."));
+                }
+                for row in &rows {
+                    Self::full_row(ui, shared, &snap, &mut a, row);
+                }
             });
         });
         self.commit(shared, a);

@@ -372,7 +372,7 @@ fn make_thumb(path: &Path) -> Thumb {
     Thumb { path: path.to_path_buf(), rgba: read_png(&png_path), seconds }
 }
 
-fn read_png(path: &Path) -> Option<(u32, u32, Vec<u8>)> {
+pub(super) fn read_png(path: &Path) -> Option<(u32, u32, Vec<u8>)> {
     let decoder = png::Decoder::new(std::io::BufReader::new(std::fs::File::open(path).ok()?));
     let mut reader = decoder.read_info().ok()?;
     let mut buf = vec![0; reader.output_buffer_size()?];

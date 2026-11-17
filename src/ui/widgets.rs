@@ -17,7 +17,7 @@ pub fn pill_slider(ui: &mut egui::Ui, theme: &Theme, value: &mut f32, width: f32
     let (rect, mut resp) = ui.allocate_exact_size(vec2(width, h), Sense::click_and_drag());
     if let Some(p) = resp.interact_pointer_pos() {
         if resp.dragged() || resp.clicked() || resp.is_pointer_button_down_on() {
-            let knob_w = 16.0;
+            let knob_w = 20.0;
             let t = ((p.x - rect.left() - knob_w / 2.0) / (rect.width() - knob_w)).clamp(0.0, 1.0);
             if (t - *value).abs() > f32::EPSILON {
                 *value = t;
@@ -46,15 +46,17 @@ pub fn pill_slider(ui: &mut egui::Ui, theme: &Theme, value: &mut f32, width: f32
     let radius = CornerRadius::same(8);
     let track = c.control.map(|h| h.0).unwrap_or(c.widget.0);
     p.rect_filled(rect, radius, track);
-    let knob_w = 16.0;
-    let knob_x = rect.left() + 2.0 + (rect.width() - knob_w - 4.0) * v;
-    let fill = Rect::from_min_max(rect.min, pos2(knob_x + knob_w / 2.0 + 2.0, rect.bottom()));
+    // The knob is as tall as the track and drawn last, so the green fill
+    // ends hidden under it (no green showing around the knob).
+    let knob_w = 20.0;
+    let knob_x = rect.left() + (rect.width() - knob_w) * v;
+    let fill = Rect::from_min_max(rect.min, pos2(knob_x + knob_w / 2.0, rect.bottom()));
     let green = if ui.is_enabled() { c.success.0 } else { c.success.0.gamma_multiply(0.4) };
     p.rect_filled(fill, radius, green);
-    let knob = Rect::from_min_size(pos2(knob_x, rect.top() + 2.0), vec2(knob_w, h - 4.0));
+    let knob = Rect::from_min_size(pos2(knob_x, rect.top()), vec2(knob_w, h));
     let hovered = resp.hovered() || resp.dragged();
-    p.rect_filled(knob.translate(vec2(0.0, 1.0)), CornerRadius::same(6), Color32::from_black_alpha(40));
-    p.rect_filled(knob, CornerRadius::same(6), if hovered { Color32::from_gray(248) } else { Color32::WHITE });
+    p.rect_filled(knob.translate(vec2(0.0, 1.0)), radius, Color32::from_black_alpha(45));
+    p.rect_filled(knob, radius, if hovered { Color32::from_gray(248) } else { Color32::WHITE });
     if resp.has_focus() {
         p.rect_stroke(rect.expand(2.0), CornerRadius::same(10), Stroke::new(1.5, c.accent.0), egui::StrokeKind::Outside);
     }
@@ -87,7 +89,7 @@ pub fn status_pill(ui: &mut egui::Ui, theme: &Theme, dot: Color32, text: &str, t
     let fg = tint.unwrap_or(c.text.0);
     let galley = ui.painter().layout_no_wrap(text.to_string(), font, fg);
     let size = Vec2::new(galley.size().x + 32.0, 28.0);
-    let (rect, resp) = ui.allocate_exact_size(size, Sense::hover());
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
     let bg = match tint {
         Some(t) => t.gamma_multiply(0.14),
         None => c.widget_hover.0,
@@ -142,4 +144,44 @@ pub fn label_w(ui: &mut egui::Ui, text: &str, width: f32) {
         ui.set_min_width(width);
         ui.label(text);
     });
+}
+
+/// A rounded search field with a magnifier ("Search settings").
+pub fn search_box(ui: &mut egui::Ui, theme: &Theme, text: &mut String, width: f32, focus: bool, hint: &str) -> Response {
+    let c = &theme.colors;
+    // A fixed 30 px tall box, whatever layout it sits in.
+    let (rect, _) = ui.allocate_exact_size(vec2(width, 30.0), Sense::hover());
+    let p = ui.painter();
+    p.rect_filled(rect, CornerRadius::same(15), c.widget_hover.0);
+    p.rect_stroke(rect, CornerRadius::same(15), Stroke::new(1.0, c.border.0), egui::StrokeKind::Inside);
+    let center = pos2(rect.left() + 16.0, rect.center().y - 1.0);
+    let s = Stroke::new(1.6, c.text_dim.0);
+    p.circle_stroke(center, 5.0, s);
+    p.line_segment([center + vec2(3.6, 3.6), center + vec2(7.0, 7.0)], s);
+    let edit = egui::TextEdit::singleline(text)
+        .hint_text(egui::RichText::new(hint).color(c.text_dim.0))
+        .frame(egui::Frame::NONE)
+        .align(egui::Align2::LEFT_CENTER)
+        .desired_width(width - 42.0);
+    let field = Rect::from_min_max(pos2(rect.left() + 30.0, rect.top() + 2.0), pos2(rect.right() - 30.0, rect.bottom() - 2.0));
+    let resp = ui.put(field, edit);
+    // An "x" that clears the text.
+    if !text.is_empty() {
+        let xc = pos2(rect.right() - 16.0, rect.center().y);
+        let x = ui.interact(Rect::from_center_size(xc, vec2(22.0, 22.0)), resp.id.with("clear"), Sense::click());
+        let col = if x.hovered() { c.text.0 } else { c.text_dim.0 };
+        if x.hovered() {
+            ui.painter().circle_filled(xc, 10.0, c.widget_active.0);
+        }
+        let s = Stroke::new(1.6, col);
+        ui.painter().line_segment([xc + vec2(-4.0, -4.0), xc + vec2(4.0, 4.0)], s);
+        ui.painter().line_segment([xc + vec2(4.0, -4.0), xc + vec2(-4.0, 4.0)], s);
+        if x.on_hover_text("Clear").on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            text.clear();
+        }
+    }
+    if focus {
+        resp.request_focus();
+    }
+    resp
 }

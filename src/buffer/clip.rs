@@ -33,7 +33,8 @@ pub struct ClipResult {
 }
 
 /// Saves the `seconds` before `pressed_at` from `session` into `out_dir`.
-pub fn save_clip(session: &Session, pressed_at: Instant, seconds: f64, out_dir: &Path) -> Result<ClipResult> {
+/// `app`: the game/program the clip came from, stored as the file's title.
+pub fn save_clip(session: &Session, pressed_at: Instant, seconds: f64, out_dir: &Path, app: Option<&str>) -> Result<ClipResult> {
     let started = Instant::now();
     let stream_start = session.start_instant().context("the replay buffer hasn't started recording yet")?;
     let seg_len = session.segment_seconds as f64;
@@ -101,7 +102,7 @@ pub fn save_clip(session: &Session, pressed_at: Instant, seconds: f64, out_dir: 
     std::fs::create_dir_all(out_dir).with_context(|| format!("creating {}", out_dir.display()))?;
     let final_path = crate::win::unique_path(out_dir, &format!("Clip_{}", crate::win::file_timestamp()), "mp4");
     let part = final_path.with_extension("mp4.part");
-    let result = remux(&joined, &part);
+    let result = remux(&joined, &part, app);
     let _ = std::fs::remove_file(&joined);
     result?;
     std::fs::rename(&part, &final_path).with_context(|| format!("finalizing {}", final_path.display()))?;
@@ -118,12 +119,25 @@ pub fn save_clip(session: &Session, pressed_at: Instant, seconds: f64, out_dir: 
     })
 }
 
-fn remux(input: &Path, output: &Path) -> Result<()> {
+/// ffmpeg arguments that tag a saved file: the app it came from (as the
+/// title, which the clip library shows) and when it was made.
+pub fn tag_args(app: Option<&str>) -> Vec<String> {
+    let mut a = vec!["-metadata".to_string(), "creation_time=now".to_string()];
+    if let Some(app) = app.map(str::trim).filter(|s| !s.is_empty()) {
+        a.push("-metadata".into());
+        a.push(format!("title={app}"));
+    }
+    a
+}
+
+fn remux(input: &Path, output: &Path, app: Option<&str>) -> Result<()> {
     let out = std::process::Command::new(crate::paths::ffmpeg_exe())
         .creation_flags(CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS)
         .args(["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i"])
         .arg(input)
-        .args(["-map", "0", "-c", "copy", "-movflags", "+faststart", "-f", "mp4"])
+        .args(["-map", "0", "-c", "copy"])
+        .args(tag_args(app))
+        .args(["-movflags", "+faststart", "-f", "mp4"])
         .arg(output)
         .output()
         .context("could not run ffmpeg for remux")?;

@@ -1,6 +1,6 @@
 [package]
 name = "snag"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 description = "Lightweight game-clipping app for Windows (replay buffer, screenshots, trimmer)"
 
@@ -24,7 +24,7 @@ png = "0.18.1"              # screenshot encoding
 hound = "3.5.1"             # WAV reading/writing for the clip sound volume control
 
 # egui via eframe, OpenGL ("glow") backend: smallest/lightest renderer option.
-eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts", "accesskit"] }
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts", "accesskit", "clipboard"] }
 
 # System tray icon + context menu. Default features are Linux-only (gtk), so off.
 tray-icon = { version = "0.26.1", default-features = false }
@@ -32,6 +32,7 @@ raw-window-handle = "0.6"
 # The COM `#[implement]` macro expands to paths in `windows_core`, so it is a
 # direct dependency too (same version the `windows` crate uses).
 windows-core = "0.62.2"
+ureq = { version = "3.5.2", default-features = false, features = ["native-tls-no-default", "cookies", "gzip"] }   # clip uploads (Windows TLS via schannel)
 
 # Microsoft's official Rust projection of the Win32 + WinRT APIs.
 # Each feature flag pulls in one API namespace; only what we use is enabled
@@ -56,6 +57,7 @@ features = [
     "Win32_Media_Audio",
     "Win32_Media_Audio_Endpoints",
     "Win32_Security",
+    "Win32_Security_Credentials",
     "Win32_Storage_FileSystem",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
@@ -69,6 +71,7 @@ features = [
     "Win32_System_Registry",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
+    "Win32_System_Time",
     "Win32_System_Variant",
     "Win32_System_WinRT",
     "Win32_System_WinRT_Direct3D11",

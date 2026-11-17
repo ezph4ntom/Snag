@@ -50,7 +50,7 @@ fn snapshot_and_stop_make_complete_files() {
     let recording = Recording::start(rec.session.clone()).unwrap();
     std::thread::sleep(Duration::from_secs(5));
     // Whole-session mode: save what we have so far, keep recording.
-    let snap = recording.snapshot_job(&root)().unwrap();
+    let snap = recording.snapshot_job(&root, Some("Test Game".into()))().unwrap();
     let r = verify_clip(&snap.path, true, None).unwrap();
     println!("snapshot: {}", r.summary());
     assert!(r.is_ok(), "{}", r.summary());
@@ -60,7 +60,7 @@ fn snapshot_and_stop_make_complete_files() {
     // Longer than the 3 s buffer: segments must have been copied in time.
     std::thread::sleep(Duration::from_secs(4));
     let temp = recording.temp.clone();
-    let done = recording.stop(&root, false)().unwrap();
+    let done = recording.stop(&root, false, None)().unwrap();
     rec.stop();
     let r = verify_clip(&done.path, true, None).unwrap();
     println!("stopped: {}", r.summary());

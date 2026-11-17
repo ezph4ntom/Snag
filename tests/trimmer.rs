@@ -47,9 +47,10 @@ fn fast_and_precise_trims_are_frame_exact() {
         assert!(t0.elapsed() < Duration::from_secs(20), "recorder didn't start: {:?}", rec.session.error());
         std::thread::sleep(Duration::from_millis(50));
     }
-    let clip = save_clip(&rec.session, Instant::now(), 4.0, &root).unwrap().path;
+    let clip = save_clip(&rec.session, Instant::now(), 4.0, &root, Some("Test Game")).unwrap().path;
     rec.stop();
     let original = verify_clip(&clip, true, None).unwrap();
+    assert_eq!(title(&clip), "Test Game", "clips are tagged with the game");
     assert!(original.is_ok(), "{}", original.summary());
     let first = original.first_code.unwrap();
     let p = probe(&clip).unwrap();
@@ -79,6 +80,17 @@ fn fast_and_precise_trims_are_frame_exact() {
         assert!(played > 48_000, "preview player fed only {played} frames");
     }
 
+    // Pretend the clip was saved two days ago: trims must keep that date.
+    let two_days_ago = std::time::SystemTime::now() - Duration::from_secs(2 * 86_400);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&clip)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(two_days_ago))
+        .unwrap();
+    let mtime = |p: &std::path::Path| std::fs::metadata(p).unwrap().modified().unwrap();
+    let original_mtime = mtime(&clip);
+
     let (start, end) = (75usize, 200usize);
     for mode in [TrimMode::Precise, TrimMode::Fast] {
         let job = TrimJob { start, end, mode, output: Output::NewFile, encoder: enc.kind };
@@ -96,14 +108,27 @@ fn fast_and_precise_trims_are_frame_exact() {
         if mode == TrimMode::Fast {
             assert_eq!(eff, 60, "fast mode starts on the keyframe before 75");
         }
+        assert_eq!(mtime(&out), original_mtime, "{mode:?}: the trimmed copy keeps the clip's date");
+        assert_eq!(title(&out), "Test Game", "{mode:?}: the trimmed copy keeps the game tag");
     }
 
     // Overwrite mode replaces the original in place.
     let job = TrimJob { start: 120, end: 179, mode: TrimMode::Fast, output: Output::Overwrite, encoder: enc.kind };
     let out = trim(&p, &job, &|_| {}, &AtomicBool::new(false)).unwrap();
     assert_eq!(out, clip);
+    assert_eq!(mtime(&clip), original_mtime, "overwriting keeps the clip's date");
     let r = verify_clip(&clip, true, None).unwrap();
     assert!(r.is_ok() && r.frames == 60 && r.first_code == Some(first + 120), "{}", r.summary());
     println!("overwrite: {}", r.summary());
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The file's title tag (the game it came from).
+fn title(path: &std::path::Path) -> String {
+    let out = std::process::Command::new(snag::paths::ffprobe_exe())
+        .args(["-v", "error", "-show_entries", "format_tags=title", "-of", "default=nw=1:nk=1"])
+        .arg(path)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
 }

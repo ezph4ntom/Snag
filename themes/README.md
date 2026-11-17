@@ -6,7 +6,7 @@ cards, Ember-red accent), **Graphite** (neutral dark greys, Ember accent),
 and **OLED** (pure black for OLED screens; outlines and accents stay).
 
 Each `*.json` file in this folder is a theme. The file name (without
-`.json`) is the theme's id; `name` is what the Appearance tab shows.
+`.json`) is the theme's id; `name` is what Settings → Appearance shows.
 
 Selecting a theme applies it instantly. The active theme file is also
 watched: save it in your editor and the window updates within a second, so
@@ -103,5 +103,5 @@ The header logo follows the theme too: the glyph takes `text`, the dot takes `ac
 }
 ```
 
-If a theme file has a mistake (bad color, invalid JSON), the Appearance tab
+If a theme file has a mistake (bad color, invalid JSON), Settings → Appearance
 shows the error and the built-in theme is used until you fix it.

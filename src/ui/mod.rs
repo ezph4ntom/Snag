@@ -11,6 +11,8 @@ mod chrome;
 mod dialogs;
 mod live_tab;
 mod quality_tab;
+mod library_tab;
+mod search;
 mod settings_tab;
 mod sound_tab;
 mod trimmer_tab;
@@ -35,11 +37,10 @@ pub enum Tab {
     Clips,
     Settings,
     Quality,
-    Appearance,
 }
 
 impl Tab {
-    const ALL: [Tab; 6] = [Tab::Live, Tab::Sound, Tab::Clips, Tab::Settings, Tab::Quality, Tab::Appearance];
+    const ALL: [Tab; 5] = [Tab::Live, Tab::Clips, Tab::Sound, Tab::Quality, Tab::Settings];
 
     fn parse(s: &str) -> Tab {
         match s {
@@ -47,7 +48,7 @@ impl Tab {
             "sound" | "audio" => Tab::Sound,
             "settings" => Tab::Settings,
             "quality" => Tab::Quality,
-            "appearance" | "themes" => Tab::Appearance,
+            "appearance" | "themes" => Tab::Settings,
             _ => Tab::Clips,
         }
     }
@@ -56,10 +57,9 @@ impl Tab {
         match self {
             Tab::Live => "Live",
             Tab::Sound => "Sound",
-            Tab::Clips => "Clips & trimmer",
+            Tab::Clips => "Clips",
             Tab::Settings => "Settings",
             Tab::Quality => "Quality",
-            Tab::Appearance => "Appearance",
         }
     }
 
@@ -70,7 +70,6 @@ impl Tab {
             Tab::Clips => chrome::Icon::Scissors,
             Tab::Settings => chrome::Icon::Gear,
             Tab::Quality => chrome::Icon::Monitor,
-            Tab::Appearance => chrome::Icon::Palette,
         }
     }
 }
@@ -131,6 +130,10 @@ struct App {
     theme_error: Option<String>,
     last_theme_check: Instant,
     trimmer: trimmer_tab::TrimmerTab,
+    library: library_tab::LibraryTab,
+    /// Closing was asked while uploads run: confirm first.
+    confirm_close: bool,
+    close_anyway: bool,
     settings_tab: settings_tab::SettingsTab,
     live: live_tab::LiveTab,
     sound: sound_tab::SoundTab,
@@ -146,6 +149,8 @@ struct App {
     dock_target: Option<crate::config::TabDock>,
     /// Icons-only side bar: open (showing names) while hovered.
     bar_open: bool,
+    /// The open side bar's own grip is being dragged.
+    bar_grip_drag: bool,
     /// Size of the tab bar last frame (for the snap preview).
     tab_bar_size: egui::Vec2,
     /// The area below the title bar last frame.
@@ -153,6 +158,8 @@ struct App {
     /// The latest note from the core and when it appeared (shown briefly
     /// as a toast in the corner).
     toast: Option<(String, Instant)>,
+    /// The settings search in the title bar ("" = not searching).
+    search: String,
 }
 
 pub fn run(args: UiArgs) -> Result<()> {
@@ -160,6 +167,8 @@ pub fn run(args: UiArgs) -> Result<()> {
     crate::paths::migrate_from_clipapp();
     let (mut settings, _) = Settings::load();
     let tab = Tab::parse(args.tab.as_deref().unwrap_or("live"));
+    let open_uploads = args.tab.as_deref() == Some("uploads");
+    let open_appearance = matches!(args.tab.as_deref(), Some("appearance" | "themes"));
     // Themes were renamed (v0.5): a theme that no longer exists becomes the
     // default, Daylight.
     let theme_now = crate::themes::existing_or_default(&settings.theme);
@@ -244,7 +253,13 @@ pub fn run(args: UiArgs) -> Result<()> {
                 theme_error,
                 last_theme_check: Instant::now(),
                 trimmer,
-                settings_tab: settings_tab::SettingsTab::default(),
+                settings_tab: {
+                    let mut s = settings_tab::SettingsTab::default();
+                    if open_appearance {
+                        s.show_category(settings_tab::Category::Appearance);
+                    }
+                    s
+                },
                 live: live_tab::LiveTab::default(),
                 sound: sound_tab::SoundTab::default(),
                 quality: quality_tab::QualityTab::default(),
@@ -255,8 +270,19 @@ pub fn run(args: UiArgs) -> Result<()> {
                 dock_target: None,
                 tab_bar_size: egui::vec2(160.0, 44.0),
                 bar_open: false,
+                bar_grip_drag: false,
                 content_rect: egui::Rect::NOTHING,
                 toast: None,
+                search: String::new(),
+                library: {
+                    let mut l = library_tab::LibraryTab::new();
+                    if open_uploads {
+                        l.show_uploads();
+                    }
+                    l
+                },
+                confirm_close: false,
+                close_anyway: false,
             }))
         }),
     )
@@ -322,6 +348,12 @@ impl App {
                 CoreToUi::HotkeyCaptured { target, hotkey } => self.shared.captured_hotkey = Some((target, hotkey)),
                 CoreToUi::Show { tab, clip, activate } => {
                     self.tab = Tab::parse(&tab);
+                    if tab == "uploads" {
+                        self.library.show_uploads();
+                    }
+                    if tab == "appearance" || tab == "themes" {
+                        self.settings_tab.show_category(settings_tab::Category::Appearance);
+                    }
                     if let Some(c) = clip {
                         self.trimmer.load(c);
                     }
@@ -421,9 +453,11 @@ impl App {
             egui::Layout::left_to_right(egui::Align::Center)
         };
         let mut icon_rects: Vec<(Tab, egui::Rect)> = Vec::new();
+        let mut grip_at = egui::Rect::NOTHING;
         ui.with_layout(layout, |ui| {
             let grip_size = if vertical { egui::vec2(28.0, 14.0) } else { egui::vec2(14.0, 28.0) };
             let (grip_rect, grip) = ui.allocate_exact_size(grip_size, egui::Sense::drag());
+            grip_at = grip_rect;
             let grip = grip.on_hover_text("Drag to move the tab bar to another edge").on_hover_cursor(egui::CursorIcon::Grab);
             chrome::paint_grip(ui.painter(), grip_rect, vertical, if grip.hovered() { c.text.0 } else { c.text_dim.0 });
             dragging |= grip.dragged();
@@ -473,7 +507,9 @@ impl App {
         });
 
         if icons && vertical {
-            self.slide_out(ui.ctx(), bar.expand(8.0), &icon_rects, dragging);
+            let (d, r) = self.slide_out(ui.ctx(), bar.expand(8.0), grip_at, &icon_rects, dragging);
+            dragging |= d;
+            released |= r;
         }
 
         if dragging {
@@ -494,12 +530,11 @@ impl App {
 
     /// Icons-only side bar: while the mouse is over it, a wider copy slides
     /// out over the content (so nothing reflows) with the tab names.
-    fn slide_out(&mut self, ctx: &egui::Context, panel: egui::Rect, icons: &[(Tab, egui::Rect)], dragging: bool) {
+    /// Returns (dragging, released) for its grip: the open bar covers the
+    /// real one, so it has its own.
+    fn slide_out(&mut self, ctx: &egui::Context, panel: egui::Rect, grip: egui::Rect, icons: &[(Tab, egui::Rect)], dragging: bool) -> (bool, bool) {
         const OPEN_W: f32 = 184.0;
         let left = self.shared.settings.ui.tab_dock == crate::config::TabDock::Left;
-        // Start below the grip, so the bar can still be dragged while open.
-        let top = icons.first().map(|(_, r)| r.top() - 6.0).unwrap_or(panel.top());
-        let panel = egui::Rect::from_min_max(egui::pos2(panel.left(), top), panel.max);
         let span = |w: f32| {
             if left {
                 egui::Rect::from_min_size(panel.min, egui::vec2(w, panel.height()))
@@ -508,11 +543,12 @@ impl App {
             }
         };
         let hover_w = if self.bar_open { OPEN_W } else { panel.width() };
-        self.bar_open = !dragging && ctx.pointer_hover_pos().is_some_and(|p| span(hover_w).contains(p));
+        self.bar_open = self.bar_grip_drag || (!dragging && ctx.pointer_hover_pos().is_some_and(|p| span(hover_w).contains(p)));
         let t = ctx.animate_bool_with_time(egui::Id::unique("tabbar-open"), self.bar_open, 0.16);
         if t <= 0.01 {
-            return;
+            return (false, false);
         }
+        let mut grip_drag = (false, false);
         let ease = 1.0 - (1.0 - t).powi(3); // ease-out
         let rect = span(panel.width() + (OPEN_W - panel.width()) * ease);
         let c = self.shared.theme.colors.clone();
@@ -530,6 +566,23 @@ impl App {
                 p.rect_filled(rect, 0.0, c.panel.0);
                 let edge_x = if left { rect.right() } else { rect.left() };
                 p.line_segment([egui::pos2(edge_x, rect.top()), egui::pos2(edge_x, rect.bottom())], egui::Stroke::new(1.0, c.border.0));
+                // The grip row, with its name.
+                let grip_row = egui::Rect::from_min_max(egui::pos2(rect.left() + 8.0, grip.top() - 4.0), egui::pos2(rect.right() - 8.0, grip.bottom() + 4.0));
+                let g = ui.interact(grip_row, egui::Id::unique("tabbar-overlay-grip"), egui::Sense::drag()).on_hover_cursor(egui::CursorIcon::Grab);
+                if g.hovered() || g.dragged() {
+                    p.rect_filled(grip_row, radius, c.widget_hover.0);
+                }
+                let gcol = if g.hovered() || g.dragged() { c.text.0 } else { c.text_dim.0 };
+                let grip_here = egui::Rect::from_center_size(egui::pos2(grip.center().x, grip_row.center().y), grip.size());
+                chrome::paint_grip(&p, grip_here, true, gcol);
+                p.text(
+                    egui::pos2(grip_row.left() + 42.0, grip_row.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    "Drag to move",
+                    egui::FontId::proportional(self.shared.theme.fonts.body - 1.5),
+                    c.text_dim.0.gamma_multiply(ease),
+                );
+                grip_drag = (g.dragged(), g.drag_stopped());
                 for (tab, icon) in icons {
                     let row = egui::Rect::from_min_max(egui::pos2(rect.left() + 8.0, icon.top()), egui::pos2(rect.right() - 8.0, icon.bottom()));
                     let resp = ui.interact(row, egui::Id::unique(("tab-row", tab.label())), egui::Sense::click());
@@ -559,6 +612,8 @@ impl App {
         if let Some(tab) = clicked {
             self.tab = tab;
         }
+        self.bar_grip_drag = grip_drag.0;
+        grip_drag
     }
 
     /// While the tab bar is dragged: a highlight where it would land.
@@ -574,29 +629,109 @@ impl App {
         painter.rect_stroke(rect.shrink(1.0), 6.0, egui::Stroke::new(2.0, c.accent.0), egui::StrokeKind::Inside);
     }
 
+    /// While something is typed in the title-bar search: only the matching
+    /// settings sections, from every tab, each fully usable.
+    fn search_results(&mut self, ui: &mut egui::Ui) {
+        let query = self.search.trim().to_string();
+        let hits = search::search(&query);
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            ui.set_max_width(900.0);
+            ui.horizontal(|ui| {
+                let n = hits.len();
+                let what = if n == 1 { "1 setting".to_string() } else { format!("{n} settings") };
+                ui.label(RichText::new(format!("{what} matching \u{201c}{query}\u{201d}")).family(crate::themes::brand_bold_family()).size(self.shared.theme.fonts.body + 2.0));
+                if ui.button("Clear").on_hover_text("Esc").clicked() {
+                    self.search.clear();
+                }
+            });
+            ui.add_space(10.0);
+            if hits.is_empty() {
+                ui.label(dim(&self.shared, "Nothing matches. Try words like \u{201c}hotkey\u{201d}, \u{201c}mic\u{201d}, \u{201c}monitor\u{201d}, \u{201c}startup\u{201d} or \u{201c}theme\u{201d}."));
+                return;
+            }
+            if hits.iter().any(|h| matches!(h.hit, search::Hit::Settings(_))) {
+                self.settings_tab.poll(ui, &mut self.shared);
+            }
+            for h in hits {
+                ui.label(dim(&self.shared, format!("{}  \u{203a}  {}", h.tab, h.title)).small());
+                ui.add_space(2.0);
+                match h.hit {
+                    search::Hit::Settings(settings_tab::SettingsSection::Uploads) => self.library.settings_section(ui, &mut self.shared),
+                    search::Hit::Settings(s) => self.settings_tab.section_ui(s, ui, &mut self.shared),
+                    search::Hit::SoundRecording => self.sound.recording_section(ui, &mut self.shared),
+                    search::Hit::SoundSources => self.sound.sources_section(ui, &mut self.shared),
+                    search::Hit::QualityHardware => self.quality.section_ui(quality_tab::QualitySection::Hardware, ui, &mut self.shared),
+                    search::Hit::QualityPreset => self.quality.section_ui(quality_tab::QualitySection::Preset, ui, &mut self.shared),
+                    search::Hit::QualityManual => self.quality.section_ui(quality_tab::QualitySection::Manual, ui, &mut self.shared),
+                    search::Hit::Theme => self.appearance.theme_section(ui, &mut self.shared, self.theme_error.as_deref()),
+                }
+            }
+        });
+    }
+
+    fn close_dialog(&mut self, ctx: &egui::Context) {
+        if !self.confirm_close {
+            return;
+        }
+        let n = self.library.uploading();
+        if n == 0 {
+            self.confirm_close = false;
+            return;
+        }
+        let c = self.shared.theme.colors.clone();
+        egui::Modal::new(egui::Id::unique("close-uploads")).show(ctx, |ui| {
+            ui.set_width(360.0);
+            ui.label(RichText::new("Uploads still running").family(crate::themes::brand_bold_family()).size(self.shared.theme.fonts.body + 3.0));
+            ui.add_space(6.0);
+            let what = if n == 1 { "An upload is".to_string() } else { format!("{n} uploads are") };
+            ui.label(format!("{what} still in progress. Closing the window stops it (recording keeps going in the tray)."));
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                let keep = egui::Button::new(RichText::new("Keep uploading").color(c.accent_text.0)).fill(c.accent.0);
+                if ui.add(keep).clicked() {
+                    self.confirm_close = false;
+                }
+                if ui.button("Stop and close").clicked() {
+                    self.library.cancel_uploads();
+                    self.close_anyway = true;
+                    self.confirm_close = false;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            });
+        });
+    }
+
     /// The status badge in the title bar: recording / buffer state.
-    fn status_badge(ui: &mut egui::Ui, theme: &crate::themes::Theme, status: Option<&CoreStatus>) {
+    /// Returns true when the replay-buffer badge was clicked (switches
+    /// between "120 s" and "2:00").
+    fn status_badge(ui: &mut egui::Ui, theme: &crate::themes::Theme, status: Option<&CoreStatus>, minutes: bool) -> bool {
         let c = &theme.colors;
         let Some(s) = status else {
             widgets::status_pill(ui, theme, c.text_dim.0, "Not running", None)
                 .on_hover_text("The Snag tray app isn't running, so nothing is recorded. Start snag.exe.");
-            return;
+            return false;
         };
+        let mut clicked = false;
         let red = c.error.0;
         if s.rec_active {
             let what = if s.rec_session_mode { "Session" } else { "REC" };
             widgets::status_pill(ui, theme, red, &format!("{what} {}", widgets::fmt_duration(s.rec_seconds)), Some(red))
                 .on_hover_text(format!("{} recorded so far", widgets::fmt_bytes(s.rec_bytes)));
         } else if s.recording && s.state == "Recording" {
-            widgets::status_pill(ui, theme, c.success.0, &format!("Replay buffer · {:.0} s", s.buffered_seconds), None);
+            let held = if minutes { widgets::fmt_duration(s.buffered_seconds) } else { format!("{:.0} s", s.buffered_seconds) };
+            clicked = widgets::status_pill(ui, theme, c.success.0, &format!("Replay buffer · {held}"), None)
+                .on_hover_text(if minutes { "Click to show seconds" } else { "Click to show minutes" })
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked();
         } else if s.recording {
             widgets::status_pill(ui, theme, c.warning.0, "Starting...", None);
         } else {
             widgets::status_pill(ui, theme, c.text_dim.0, "Buffer off", None);
         }
         if s.rec_saving {
-            ui.spinner().on_hover_text("Saving a recording...");
+            ui.spinner().on_hover_text("Saving a recording");
         }
+        clicked
     }
 
     /// The latest note ("Saved Clip_...", errors) for a few seconds, bottom
@@ -652,6 +787,16 @@ impl eframe::App for App {
         self.flush_outbox();
         self.theme_hot_reload(ctx);
         self.trimmer.poll_background(&self.shared.settings);
+        self.library.poll_background(ctx);
+        if let Some(t) = self.library.toasts.pop() {
+            self.toast = Some((t, Instant::now()));
+            self.library.toasts.clear();
+        }
+        // Closing the window would stop running uploads: ask first.
+        if ctx.input(|i| i.viewport().close_requested()) && self.library.uploading() > 0 && !self.close_anyway {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.confirm_close = true;
+        }
         // UI size (Settings > Window).
         if (ctx.zoom_factor() - self.shared.settings.ui.scale).abs() > 0.001 {
             ctx.set_zoom_factor(self.shared.settings.ui.scale);
@@ -665,7 +810,8 @@ impl eframe::App for App {
             self.flush_outbox();
         }
         // Sound levels for the Sound tab and the Live tab's "Sound in clips".
-        self.sound.set_visible(matches!(self.tab, Tab::Sound | Tab::Live) && !minimized, ctx);
+        let searching_sound = !self.search.trim().is_empty();
+        self.sound.set_visible((matches!(self.tab, Tab::Sound | Tab::Live) || searching_sound) && !minimized, ctx);
         // Wake up for debounced saves and the theme/clip-list checks.
         ctx.request_repaint_after(Duration::from_millis(if self.shared.dirty_at.is_some() { 100 } else { 1000 }));
     }
@@ -683,6 +829,14 @@ impl eframe::App for App {
         let icons = self.shared.settings.ui.icon_tabs;
         let theme = self.shared.theme.clone();
         let status = self.shared.status.clone().filter(|_| self.connected);
+        // Ctrl+F jumps into the search; Esc leaves it.
+        let focus_search = ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::F));
+        if !self.search.is_empty() && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.search.clear();
+        }
+        let mut search = std::mem::take(&mut self.search);
+        let badge_minutes = self.shared.settings.ui.badge_minutes;
+        let mut toggle_badge = false;
         egui::Panel::top("title")
             .exact_size(chrome::TITLE_H)
             .frame(egui::Frame::new().fill(panel).stroke(egui::Stroke::NONE))
@@ -698,10 +852,22 @@ impl eframe::App for App {
                             self.tab_bar(ui, false, true);
                         }
                     },
-                    |ui| Self::status_badge(ui, &theme, status.as_ref()),
+                    |ui| {
+                        if Self::status_badge(ui, &theme, status.as_ref(), badge_minutes) {
+                            toggle_badge = true;
+                        }
+                        ui.add_space(10.0);
+                        widgets::search_box(ui, &theme, &mut search, 240.0, focus_search, "Search settings")
+                            .on_hover_text("Search all settings (Ctrl+F)");
+                    },
                 );
                 ui.painter().line_segment([rect.left_bottom(), rect.right_bottom()], border);
             });
+        self.search = search;
+        if toggle_badge {
+            self.shared.settings.ui.badge_minutes = !badge_minutes;
+            self.shared.mark_dirty();
+        }
         self.content_rect = ui.available_rect_before_wrap();
 
         let bar_frame = egui::Frame::new().fill(panel).inner_margin(margin).stroke(egui::Stroke::NONE);
@@ -730,15 +896,36 @@ impl eframe::App for App {
         let bg = colors.background.0;
         let m = self.shared.theme.spacing.window_margin.clamp(0.0, 127.0) as i8 + 6;
         let mut open_clip = None;
+        let searching = !self.search.trim().is_empty();
         egui::CentralPanel::default_margins()
             .frame(egui::Frame::new().fill(bg).inner_margin(egui::Margin::symmetric(m + 4, m)))
-            .show(ui, |ui| match self.tab {
+            .show(ui, |ui| if searching {
+                self.search_results(ui);
+            } else {
+                match self.tab {
                 Tab::Live => open_clip = self.live.ui(ui, &mut self.shared, &mut self.sound),
                 Tab::Sound => self.sound.ui(ui, &mut self.shared),
-                Tab::Clips => self.trimmer.ui(ui, &mut self.shared),
-                Tab::Settings => self.settings_tab.ui(ui, &mut self.shared),
+                Tab::Clips => {
+                    if self.trimmer.is_open() {
+                        if self.trimmer.ui(ui, &mut self.shared) {
+                            self.trimmer.close();
+                        }
+                    } else if let Some(p) = self.library.ui(ui, &mut self.shared) {
+                        self.trimmer.load(p);
+                    }
+                }
+                Tab::Settings => {
+                    let library = &mut self.library;
+                    let appearance = &mut self.appearance;
+                    let theme_error = self.theme_error.as_deref();
+                    self.settings_tab.ui(ui, &mut self.shared, &mut |which, ui, shared| match which {
+                        settings_tab::SettingsSection::Uploads => library.settings_section(ui, shared),
+                        settings_tab::SettingsSection::Theme => appearance.theme_section(ui, shared, theme_error),
+                        _ => {}
+                    });
+                }
                 Tab::Quality => self.quality.ui(ui, &mut self.shared),
-                Tab::Appearance => self.appearance.ui(ui, &mut self.shared, self.theme_error.as_deref()),
+                }
             });
         match open_clip {
             Some(live_tab::LiveAction::OpenClip(path)) => {
@@ -748,6 +935,8 @@ impl eframe::App for App {
             Some(live_tab::LiveAction::ShowClips) => self.tab = Tab::Clips,
             None => {}
         }
+        self.library.modals(&ctx, &self.shared);
+        self.close_dialog(&ctx);
         self.dock_preview(&ctx);
         self.draw_toast(&ctx);
         // A 1 px outline around the whole window (no Windows frame anymore).

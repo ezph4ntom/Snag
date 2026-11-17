@@ -37,11 +37,15 @@
 
 **Light on your PC.** Uses your graphics card's video encoder (NVIDIA, AMD or Intel) and picks the best quality your hardware handles. While you play, Snag is just a tray icon.
 
-**Trim in seconds.** A built-in trimmer with sound: cut losslessly in an instant, or frame-exact.
+**All your clips in one place.** A clip library grouped by day, tagged with the game you were playing, with favorites, search, sorting and your own folders. Rename a clip right on its card.
+
+**Share with a link.** Press **Upload** on a clip and the link is copied for you. Connect your Streamable account for links that last, or skip it and get a temporary Litterbox link.
+
+**Trim in seconds.** A built-in trimmer with sound: cut losslessly in an instant, or frame-exact. Trimmed clips keep their original date.
 
 **Any key you like.** Any key or mouse button works as a hotkey, and it works inside games.
 
-**Make it yours.** Five themes, a tab bar you can drag to any edge, an icons-only mode and adjustable size.
+**Make it yours.** Five themes, a tab bar you can drag to any edge, an icons-only mode, adjustable size, clips up to 15 minutes long, and a settings search that finds anything (try "mic" or "monitor").
 
 ## Get started
 
@@ -60,7 +64,7 @@ Clips land in `Videos\Snag`. Hotkeys, clip length, folders and everything else a
 
 ## Themes
 
-Daylight is the default. Prefer the dark side? Pick **Graphite**, **Midnight**, **Warm Ink** or **OLED** under Appearance, or [make your own](themes/README.md).
+Daylight is the default. Prefer the dark side? Pick **Graphite**, **Midnight**, **Warm Ink** or **OLED** in **Settings → Appearance**, or [make your own](themes/README.md).
 
 <p align="center">
   <img src="docs/images/themes-dark.png" width="880" alt="Snag in the Graphite and Midnight themes">
@@ -90,6 +94,12 @@ That game probably runs as administrator. Pick a key combination with Ctrl, Alt 
 <summary><b>Clips have no sound, or are missing Discord</b></summary>
 <br>
 Open the <b>Sound</b> tab. "Recording now" lists everything being captured. With <i>Whole PC audio</i> on, every output is recorded; otherwise tick the apps you want.
+</details>
+
+<details>
+<summary><b>Is the Streamable login safe?</b></summary>
+<br>
+Streamable has no official upload API, so Snag signs in the way the Streamable website does. Your password is stored in Windows Credential Manager and only ever sent to streamable.com. A password you don't use anywhere else is safest. Snag never asks for Google logins: if you signed up with Google, set a Streamable password first, or skip the login and use Litterbox links.
 </details>
 
 <details>

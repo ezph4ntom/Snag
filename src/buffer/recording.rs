@@ -87,14 +87,14 @@ impl Recording {
 
     /// Saves everything recorded so far as a new file in `out_dir`; the
     /// recording keeps going. Blocks for the remux (call off the UI path).
-    pub fn snapshot_job(&self, out_dir: &Path) -> impl FnOnce() -> Result<ClipResult> + Send + 'static {
+    pub fn snapshot_job(&self, out_dir: &Path, app: Option<String>) -> impl FnOnce() -> Result<ClipResult> + Send + 'static {
         let (temp, bytes, seconds, out) = (self.temp.clone(), self.bytes(), self.seconds(), out_dir.to_path_buf());
         move || {
             let started = Instant::now();
             if bytes == 0 {
                 bail!("nothing recorded yet");
             }
-            let final_path = remux_to(&format!("subfile,,start,0,end,{bytes},,:{}", temp.display()), &out)?;
+            let final_path = remux_to(&format!("subfile,,start,0,end,{bytes},,:{}", temp.display()), &out, app.as_deref())?;
             Ok(result(final_path, seconds, started))
         }
     }
@@ -102,7 +102,7 @@ impl Recording {
     /// Stops recording and returns a job that finishes the file into
     /// `out_dir` (appends the last segment, remuxes, deletes the temp file).
     /// `discard`: delete it instead (whole-session mode when Snag quits).
-    pub fn stop(mut self, out_dir: &Path, discard: bool) -> impl FnOnce() -> Result<ClipResult> + Send + 'static {
+    pub fn stop(mut self, out_dir: &Path, discard: bool, app: Option<String>) -> impl FnOnce() -> Result<ClipResult> + Send + 'static {
         self.shared.stop.store(true, Ordering::Relaxed);
         let thread = self.thread.take();
         let (temp, shared, out) = (self.temp.clone(), self.shared.clone(), out_dir.to_path_buf());
@@ -120,7 +120,7 @@ impl Recording {
                 let _ = std::fs::remove_file(&temp);
                 bail!("recording discarded");
             }
-            let final_path = remux_to(&temp.display().to_string(), &out)?;
+            let final_path = remux_to(&temp.display().to_string(), &out, app.as_deref())?;
             let _ = std::fs::remove_file(&temp);
             Ok(result(final_path, seconds, started))
         }
@@ -198,14 +198,16 @@ fn append_main(session: &Session, path: &Path, first: u64, shared: &Shared) -> R
 }
 
 /// Remuxes `input` (a path or ffmpeg URL) into `out_dir/Recording_<time>.mp4`.
-fn remux_to(input: &str, out_dir: &Path) -> Result<PathBuf> {
+fn remux_to(input: &str, out_dir: &Path, app: Option<&str>) -> Result<PathBuf> {
     std::fs::create_dir_all(out_dir).with_context(|| format!("creating {}", out_dir.display()))?;
     let final_path = crate::win::unique_path(out_dir, &format!("Recording_{}", crate::win::file_timestamp()), "mp4");
     let part = final_path.with_extension("mp4.part");
     let out = std::process::Command::new(crate::paths::ffmpeg_exe())
         .creation_flags(CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS)
         .args(["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", input])
-        .args(["-map", "0", "-c", "copy", "-avoid_negative_ts", "make_zero", "-movflags", "+faststart", "-f", "mp4"])
+        .args(["-map", "0", "-c", "copy", "-avoid_negative_ts", "make_zero"])
+        .args(super::clip::tag_args(app))
+        .args(["-movflags", "+faststart", "-f", "mp4"])
         .arg(&part)
         .output()
         .context("could not run ffmpeg to save the recording")?;
@@ -226,7 +228,7 @@ pub fn recover_leftovers(out_dir: &Path) -> Vec<PathBuf> {
     for e in entries.flatten() {
         let p = e.path();
         if p.extension().is_some_and(|x| x == "mp4") {
-            match remux_to(&p.display().to_string(), out_dir) {
+            match remux_to(&p.display().to_string(), out_dir, None) {
                 Ok(f) => {
                     log::info!("recovered recording {} -> {}", p.display(), f.display());
                     let _ = std::fs::remove_file(&p);

@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, channel};
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, CursorIcon, Key, Pos2, Rect, RichText, Sense, Stroke, TextureHandle, TextureOptions, pos2, vec2};
 
@@ -19,16 +19,13 @@ use crate::trimmer::audio::AudioPlayer;
 use crate::trimmer::player::{Decoder, Frame, preview_size};
 use crate::trimmer::{ClipProbe, Output, TrimJob, TrimMode, effective_start, probe, trim};
 
-/// Recently decoded preview frames kept for instant stepping back (each
-/// ~2 MB at 960x540).
-const CACHE_FRAMES: usize = 12;
+/// Memory for recently decoded preview frames (kept for instant stepping
+/// back): about 48 MB, i.e. ~6 frames at 1080p, ~24 at 960x540.
+const CACHE_BYTES: usize = 48 * 1024 * 1024;
 
-struct ClipEntry {
-    path: PathBuf,
-    name: String,
-    size: u64,
-    modified: SystemTime,
-}
+/// Smooth when the full-resolution frame is drawn smaller than it is
+/// (mipmaps avoid the shimmer plain down-scaling gives).
+const PREVIEW_FILTER: TextureOptions = TextureOptions::LINEAR.with_mipmap_mode(Some(egui::TextureFilter::Linear));
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Drag {
@@ -75,16 +72,12 @@ struct Export {
 }
 
 pub struct TrimmerTab {
-    clips_dir: PathBuf,
-    clips: Vec<ClipEntry>,
-    last_scan: Option<Instant>,
     loaded: Option<Loaded>,
     loading: Option<(PathBuf, Receiver<Result<ClipProbe, String>>)>,
     precise: bool,
     export: Option<Export>,
     message: Option<(String, bool, Option<PathBuf>)>,
     confirm_overwrite: bool,
-    open_dialog: Option<Receiver<PathBuf>>,
 }
 
 fn fmt_time(t: f64) -> String {
@@ -93,27 +86,15 @@ fn fmt_time(t: f64) -> String {
     format!("{:02}:{:06.3}", m as u32, t - m * 60.0)
 }
 
-fn fmt_size(bytes: u64) -> String {
-    if bytes >= 1 << 30 {
-        format!("{:.1} GB", bytes as f64 / (1u64 << 30) as f64)
-    } else {
-        format!("{:.1} MB", bytes as f64 / (1u64 << 20) as f64)
-    }
-}
-
 impl TrimmerTab {
     pub fn new(settings: &Settings) -> Self {
         TrimmerTab {
-            clips_dir: settings.clips_dir.clone(),
-            clips: Vec::new(),
-            last_scan: None,
             loaded: None,
             loading: None,
             precise: settings.trimmer.precise_by_default,
             export: None,
             message: None,
             confirm_overwrite: false,
-            open_dialog: None,
         }
     }
 
@@ -128,14 +109,7 @@ impl TrimmerTab {
     }
 
     /// Work that must happen even while the window is minimized.
-    pub fn poll_background(&mut self, settings: &Settings) {
-        if settings.clips_dir != self.clips_dir {
-            self.clips_dir = settings.clips_dir.clone();
-            self.last_scan = None;
-        }
-        if self.last_scan.is_none_or(|t| t.elapsed() > Duration::from_secs(2)) {
-            self.scan();
-        }
+    pub fn poll_background(&mut self, _settings: &Settings) {
         if let Some((path, rx)) = &self.loading {
             if let Ok(result) = rx.try_recv() {
                 match result {
@@ -188,8 +162,7 @@ impl TrimmerTab {
                     Ok(path) => {
                         let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
                         self.message = Some((format!("Saved {name}"), false, Some(path.clone())));
-                        self.scan();
-                        if overwrite {
+                        if overwrite && self.loaded.is_some() {
                             self.load(path);
                         }
                     }
@@ -199,103 +172,46 @@ impl TrimmerTab {
         }
     }
 
-    fn scan(&mut self) {
-        self.last_scan = Some(Instant::now());
-        let mut clips: Vec<ClipEntry> = std::fs::read_dir(&self.clips_dir)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter_map(|e| {
-                let path = e.path();
-                let name = path.file_name()?.to_string_lossy().to_string();
-                let ext_ok = path.extension().is_some_and(|x| ["mp4", "mkv", "mov"].iter().any(|v| x.eq_ignore_ascii_case(v)));
-                if !ext_ok || name.starts_with('.') {
-                    return None; // skip temp/partial files
-                }
-                let meta = e.metadata().ok()?;
-                Some(ClipEntry { path, name, size: meta.len(), modified: meta.modified().ok()? })
-            })
-            .collect();
-        clips.sort_by_key(|c| std::cmp::Reverse(c.modified));
-        clips.truncate(300);
-        self.clips = clips;
+    /// A clip is open (or opening) in the editor.
+    pub fn is_open(&self) -> bool {
+        self.loaded.is_some() || self.loading.is_some()
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui, shared: &mut Shared) {
-        if let Some(rx) = &self.open_dialog {
-            if let Ok(p) = rx.try_recv() {
-                self.open_dialog = None;
-                self.load(p);
-            }
-            ui.ctx().request_repaint_after(Duration::from_millis(100));
-        }
+    /// Back to the library: closes the clip (and its decoder).
+    pub fn close(&mut self) {
+        self.loaded = None;
+        self.loading = None;
+        self.message = None;
+    }
+
+    /// The editor; returns true when "back to the library" was pressed.
+    pub fn ui(&mut self, ui: &mut egui::Ui, shared: &mut Shared) -> bool {
         if self.loading.is_some() || self.export.is_some() {
             ui.ctx().request_repaint_after(Duration::from_millis(30));
         }
-
-        egui::Panel::left("clip_list")
-            .resizable(true)
-            .default_size(270.0)
-            .frame(egui::Frame::new().inner_margin(egui::Margin { right: 10, ..Default::default() }))
-            .show(ui, |ui| self.clip_list(ui, shared));
-
-        egui::CentralPanel::no_frame().show(ui, |ui| {
-            if self.loaded.is_some() {
-                self.editor(ui, shared);
-            } else if self.loading.is_some() {
-                ui.centered_and_justified(|ui| ui.spinner());
-            } else {
-                ui.centered_and_justified(|ui| {
-                    ui.label(dim(
-                        shared,
-                        format!(
-                            "Pick a clip on the left, or press {} while playing to save one.",
-                            shared.settings.hotkeys.clip
-                        ),
-                    ));
-                });
-            }
-        });
-        self.overwrite_dialog(ui.ctx(), shared);
-    }
-
-    fn clip_list(&mut self, ui: &mut egui::Ui, shared: &Shared) {
+        let mut back = false;
         ui.horizontal(|ui| {
-            ui.heading("Clips");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("Folder").on_hover_text("Open the clips folder").clicked() {
-                    crate::win::reveal_in_explorer(&self.clips_dir);
-                }
-                if ui.button("Open file...").clicked() {
-                    self.open_dialog = Some(super::dialogs::pick_video(&self.clips_dir));
-                }
-            });
-        });
-        ui.separator();
-        let current = self.loaded.as_ref().map(|l| l.probe.path.clone());
-        let mut clicked = None;
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            if self.clips.is_empty() {
-                ui.label(dim(shared, format!("No clips yet in\n{}", self.clips_dir.display())));
+            let b = egui::Button::new("\u{2039}  Library").corner_radius(egui::CornerRadius::same(14)).min_size(vec2(0.0, 28.0));
+            if ui.add(b).on_hover_text("Back to all clips").clicked() {
+                back = true;
             }
-            for c in &self.clips {
-                let selected = current.as_deref() == Some(c.path.as_path());
-                let age = c.modified.elapsed().map(|d| d.as_secs()).unwrap_or(0);
-                let when = match age {
-                    0..=59 => "just now".to_string(),
-                    60..=3599 => format!("{} min ago", age / 60),
-                    3600..=86_399 => format!("{} h ago", age / 3600),
-                    _ => format!("{} days ago", age / 86_400),
-                };
-                let text = format!("{}\n{} · {}", c.name, fmt_size(c.size), when);
-                if ui.selectable_label(selected, text).clicked() {
-                    clicked = Some(c.path.clone());
-                }
+            let path = self.loaded.as_ref().map(|l| l.probe.path.clone()).or_else(|| self.loading.as_ref().map(|(p, _)| p.clone()));
+            if let Some(p) = path {
+                ui.add_space(6.0);
+                let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+                ui.add(egui::Label::new(RichText::new(name).strong()).truncate());
             }
         });
-        if let Some(p) = clicked {
-            self.load(p);
+        ui.add_space(8.0);
+        if self.loaded.is_some() {
+            self.editor(ui, shared);
+        } else if self.loading.is_some() {
+            ui.centered_and_justified(|ui| ui.spinner());
+        } else if let Some((msg, _, _)) = &self.message {
+            ui.label(RichText::new(msg).color(shared.theme.colors.error.0));
         }
+        self.overwrite_dialog(ui.ctx(), shared);
+        back
     }
 
     fn editor(&mut self, ui: &mut egui::Ui, shared: &mut Shared) {
@@ -416,7 +332,8 @@ impl TrimmerTab {
             if ui.add_enabled(!busy, egui::Button::new("Save as new file")).clicked() {
                 start_export = Some(false);
             }
-            if ui.add_enabled(!busy, egui::Button::new("Overwrite original...")).clicked() {
+            let overwrite = egui::Button::new(RichText::new("Overwrite original").color(colors.accent_text.0)).fill(colors.accent.0);
+            if ui.add_enabled(!busy, overwrite).clicked() {
                 self.confirm_overwrite = true;
             }
             if ui.button("Show in folder").clicked() {
@@ -634,7 +551,8 @@ fn pump(ctx: &egui::Context, l: &mut Loaded) {
             l.decoder_next = f.index + 1;
             let idx = f.index;
             l.cache.push_back(f);
-            if l.cache.len() > CACHE_FRAMES {
+            let frame_bytes = (l.size.0 * l.size.1 * 4) as usize;
+            if l.cache.len() > (CACHE_BYTES / frame_bytes.max(1)).max(4) {
                 l.cache.pop_front();
             }
             if idx >= want {
@@ -653,8 +571,8 @@ fn show(ctx: &egui::Context, l: &mut Loaded, cache_index: usize) {
     let f = &l.cache[cache_index];
     let image = egui::ColorImage::from_rgba_unmultiplied([f.width as usize, f.height as usize], &f.rgba);
     match &mut l.texture {
-        Some(t) => t.set(image, TextureOptions::LINEAR),
-        None => l.texture = Some(ctx.load_texture("preview", image, TextureOptions::LINEAR)),
+        Some(t) => t.set(image, PREVIEW_FILTER),
+        None => l.texture = Some(ctx.load_texture("preview", image, PREVIEW_FILTER)),
     }
     l.shown = Some(f.index);
 }

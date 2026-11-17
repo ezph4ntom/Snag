@@ -212,6 +212,9 @@ pub fn trim(probe: &ClipProbe, job: &TrimJob, progress: &dyn Fn(f32), cancel: &A
         Output::Overwrite => src.clone(),
     };
     let part = dir.join(format!(".{stem}.trim.part.mp4"));
+    // The trimmed clip keeps the original's dates, so it stays in its place
+    // in date-sorted lists instead of jumping to "newest".
+    let original_times = ClipTimes::of(src);
 
     let start = effective_start(probe, job.start, job.mode);
     let frames = job.end - start + 1;
@@ -279,6 +282,11 @@ pub fn trim(probe: &ClipProbe, job: &TrimJob, progress: &dyn Fn(f32), cancel: &A
     for _ in 0..20 {
         match std::fs::rename(&part, &final_path) {
             Ok(()) => {
+                if let Some(t) = &original_times {
+                    if let Err(e) = t.apply(&final_path) {
+                        log::warn!("couldn't keep the clip's date on {}: {e}", final_path.display());
+                    }
+                }
                 progress(1.0);
                 return Ok(final_path);
             }
@@ -288,6 +296,35 @@ pub fn trim(probe: &ClipProbe, job: &TrimJob, progress: &dyn Fn(f32), cancel: &A
     }
     let _ = std::fs::remove_file(&part);
     Err(last_err.unwrap()).with_context(|| format!("could not write {} (is it open in another program?)", final_path.display()))
+}
+
+/// A file's created / modified / accessed times.
+pub struct ClipTimes {
+    created: std::time::SystemTime,
+    modified: std::time::SystemTime,
+    accessed: std::time::SystemTime,
+}
+
+impl ClipTimes {
+    pub fn of(path: &Path) -> Option<ClipTimes> {
+        let m = std::fs::metadata(path).ok()?;
+        let modified = m.modified().ok()?;
+        Some(ClipTimes {
+            created: m.created().unwrap_or(modified),
+            modified,
+            accessed: m.accessed().unwrap_or(modified),
+        })
+    }
+
+    /// Stamps these times onto `path`.
+    pub fn apply(&self, path: &Path) -> std::io::Result<()> {
+        use std::os::windows::fs::FileTimesExt;
+        let times = std::fs::FileTimes::new()
+            .set_modified(self.modified)
+            .set_accessed(self.accessed)
+            .set_created(self.created);
+        std::fs::OpenOptions::new().write(true).open(path)?.set_times(times)
+    }
 }
 
 #[cfg(test)]

@@ -20,7 +20,7 @@ fn main() {
         }
         Ok(())
     } else {
-        snag::app::run_core(args.iter().any(|a| a == "--replace"))
+        snag::app::run_core(args.iter().any(|a| a == "--replace"), args.iter().any(|a| a == "--background"))
     };
     if let Err(e) = result {
         log::error!("fatal: {e:#}");

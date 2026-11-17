@@ -28,10 +28,11 @@ pub struct Decoder {
     finished: bool,
 }
 
-/// Preview size: fits in 960x540, keeps aspect ratio, even dimensions.
+/// Preview size: the clip's own resolution (true to quality) up to 1080p,
+/// keeping the aspect ratio, even dimensions.
 pub fn preview_size(w: u32, h: u32) -> (u32, u32) {
     let (w, h) = (w.max(2) as f64, h.max(2) as f64);
-    let scale = (960.0 / w).min(540.0 / h).min(1.0);
+    let scale = (1920.0 / w).min(1080.0 / h).min(1.0);
     (((w * scale) as u32).max(2) & !1, ((h * scale) as u32).max(2) & !1)
 }
 

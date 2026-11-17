@@ -54,10 +54,13 @@ Name: "ffmpeg"; Description: "Install ffmpeg (Snag needs it to record; downloads
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 
+[Registry]
+; The same value Snag's Settings > Startup switch reads and writes.
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Snag"; ValueData: """{app}\snag.exe"" --background"; Tasks: startup; Flags: uninsdeletevalue
+
 [Icons]
 Name: "{autoprograms}\Snag"; Filename: "{app}\snag.exe"; Comment: "Game clipping"
 Name: "{autodesktop}\Snag"; Filename: "{app}\snag.exe"; Tasks: desktopicon; Comment: "Game clipping"
-Name: "{userstartup}\Snag"; Filename: "{app}\snag.exe"; Tasks: startup
 
 [Run]
 Filename: "{app}\snag.exe"; Description: "Start Snag now"; Flags: nowait postinstall skipifsilent

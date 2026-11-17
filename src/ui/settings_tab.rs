@@ -50,6 +50,98 @@ pub struct SettingsTab {
     /// Whether the current sound file can be played: (file, error).
     sound_check: Option<(PathBuf, Option<String>)>,
     monitors: Option<Vec<crate::capture::MonitorInfo>>,
+    /// "Start with Windows" as read from the registry (read once).
+    startup: Option<bool>,
+    startup_error: Option<String>,
+    category: Option<Category>,
+}
+
+/// The sections of the Settings tab, in order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettingsSection {
+    Buffer,
+    Recording,
+    Hotkeys,
+    Capture,
+    Folders,
+    ClipSound,
+    AfterClip,
+    Startup,
+    Uploads,
+    Window,
+    /// The theme picker (drawn by the appearance code).
+    Theme,
+}
+
+/// The categories on the left of the Settings tab.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Category {
+    General,
+    Recording,
+    Capture,
+    Hotkeys,
+    Saving,
+    Uploads,
+    Appearance,
+}
+
+impl Category {
+    pub const ALL: [Category; 7] = [
+        Category::General,
+        Category::Recording,
+        Category::Capture,
+        Category::Hotkeys,
+        Category::Saving,
+        Category::Uploads,
+        Category::Appearance,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Category::General => "General",
+            Category::Recording => "Replay & recording",
+            Category::Capture => "Capture",
+            Category::Hotkeys => "Hotkeys",
+            Category::Saving => "Saving clips",
+            Category::Uploads => "Uploads",
+            Category::Appearance => "Appearance",
+        }
+    }
+
+    pub fn sections(self) -> &'static [SettingsSection] {
+        use SettingsSection as S;
+        match self {
+            Category::General => &[S::Startup, S::Window],
+            Category::Recording => &[S::Buffer, S::Recording],
+            Category::Capture => &[S::Capture],
+            Category::Hotkeys => &[S::Hotkeys],
+            Category::Saving => &[S::Folders, S::AfterClip, S::ClipSound],
+            Category::Uploads => &[S::Uploads],
+            Category::Appearance => &[S::Theme],
+        }
+    }
+}
+
+/// A category row on the left of the Settings tab.
+fn nav_item(ui: &mut egui::Ui, theme: &crate::themes::Theme, label: &str, selected: bool) -> egui::Response {
+    let c = &theme.colors;
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 36.0), egui::Sense::click());
+    let (bg, fg) = if selected {
+        (c.accent.0, c.accent_text.0)
+    } else if resp.hovered() {
+        (c.widget_hover.0, c.text.0)
+    } else {
+        (egui::Color32::TRANSPARENT, c.text.0)
+    };
+    ui.painter().rect_filled(rect, theme.corner_radius, bg);
+    ui.painter().text(
+        egui::pos2(rect.left() + 14.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        egui::FontId::proportional(theme.fonts.body),
+        fg,
+    );
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// egui key name -> our hotkey key name (they mostly match already).
@@ -63,7 +155,45 @@ fn key_name(key: egui::Key) -> &'static str {
 }
 
 impl SettingsTab {
-    pub fn ui(&mut self, ui: &mut egui::Ui, shared: &mut Shared) {
+    pub fn show_category(&mut self, c: Category) {
+        self.category = Some(c);
+    }
+
+    /// Categories on the left, the chosen one's sections on the right.
+    /// `other` draws the sections that live elsewhere (Uploads, Theme).
+    pub fn ui(&mut self, ui: &mut egui::Ui, shared: &mut Shared, other: &mut dyn FnMut(SettingsSection, &mut egui::Ui, &mut Shared)) {
+        self.poll(ui, shared);
+        let current = *self.category.get_or_insert(Category::General);
+        let theme = shared.theme.clone();
+        egui::Panel::left("settings-nav")
+            .resizable(false)
+            .exact_size(190.0)
+            .frame(egui::Frame::new().inner_margin(egui::Margin { right: 18, ..Default::default() }))
+            .show_separator_line(false)
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 4.0;
+                for c in Category::ALL {
+                    if nav_item(ui, &theme, c.label(), c == current).clicked() {
+                        self.category = Some(c);
+                    }
+                }
+            });
+        egui::CentralPanel::no_frame().show(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt(current).auto_shrink([false, false]).show(ui, |ui| {
+                ui.set_max_width(760.0);
+                for &which in current.sections() {
+                    match which {
+                        SettingsSection::Uploads | SettingsSection::Theme => other(which, ui, shared),
+                        _ => self.section_ui(which, ui, shared),
+                    }
+                }
+            });
+        });
+    }
+
+    /// Background work the tab needs each frame (folder pickers, key
+    /// capture), also when its sections are shown by the settings search.
+    pub fn poll(&mut self, ui: &mut egui::Ui, shared: &mut Shared) {
         if let Some((which, rx)) = &self.picking {
             if let Ok(path) = rx.try_recv() {
                 match which {
@@ -77,37 +207,59 @@ impl SettingsTab {
             }
         }
         self.listen_for_hotkey(ui, shared);
+    }
 
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            ui.set_max_width(760.0);
-            self.buffer_section(ui, shared);
-            self.hotkey_section(ui, shared);
-            self.capture_section(ui, shared);
-            self.folder_section(ui, shared);
-            self.sound_section(ui, shared);
-            self.after_clip_section(ui, shared);
-            self.window_section(ui, shared);
-        });
+    /// Draws one section (the Settings tab shows them all; the search shows
+    /// the matching ones).
+    pub fn section_ui(&mut self, which: SettingsSection, ui: &mut egui::Ui, shared: &mut Shared) {
+        match which {
+            SettingsSection::Buffer => self.buffer_section(ui, shared),
+            SettingsSection::Recording => self.recording_section(ui, shared),
+            SettingsSection::Hotkeys => self.hotkey_section(ui, shared),
+            SettingsSection::Capture => self.capture_section(ui, shared),
+            SettingsSection::Folders => self.folder_section(ui, shared),
+            SettingsSection::ClipSound => self.sound_section(ui, shared),
+            SettingsSection::AfterClip => self.after_clip_section(ui, shared),
+            SettingsSection::Startup => self.startup_section(ui, shared),
+            SettingsSection::Uploads | SettingsSection::Theme => {} // drawn elsewhere (see ui())
+            SettingsSection::Window => self.window_section(ui, shared),
+        }
     }
 
     fn buffer_section(&mut self, ui: &mut egui::Ui, shared: &mut Shared) {
         let theme = shared.theme.clone();
         let mut secs = shared.settings.buffer_seconds;
         let mut start = shared.settings.start_buffer_on_launch;
-        let mut mode = shared.settings.recording.mode;
+        let kbps = shared.settings.video.bitrate_kbps;
         section(ui, shared, "Replay buffer", |ui| {
             ui.horizontal(|ui| {
                 super::widgets::label_w(ui, "Clip length", 110.0);
-                super::widgets::value_box(ui, &theme, &secs.to_string(), "s", 64.0);
-                // 5..300 s in steps of 5.
-                let mut t = (secs as f32 - 5.0) / 295.0;
+                let shown = if secs >= 60 { format!("{}:{:02}", secs / 60, secs % 60) } else { secs.to_string() };
+                super::widgets::value_box(ui, &theme, &shown, if secs >= 60 { "min" } else { "s" }, 76.0);
+                // 5..900 s (15 minutes) in steps of 5.
+                let mut t = (secs as f32 - 5.0) / 895.0;
                 if super::widgets::pill_slider(ui, &theme, &mut t, 320.0).changed() {
-                    secs = (((t * 295.0 + 5.0) / 5.0).round() * 5.0) as u32;
+                    secs = (((t * 895.0 + 5.0) / 5.0).round() * 5.0) as u32;
                 }
             });
+            if secs > 120 {
+                // Segments live on disk: roughly bitrate x length.
+                let gb = kbps as f64 * secs as f64 / 8.0 / 1e6;
+                ui.label(RichText::new(format!("Long buffers use more disk space while Snag runs (about {gb:.1} GB at your quality).")).small());
+            }
             ui.add_space(4.0);
             ui.checkbox(&mut start, "Start the replay buffer when Snag starts");
         });
+        let s = &mut shared.settings;
+        if secs != s.buffer_seconds || start != s.start_buffer_on_launch {
+            s.buffer_seconds = secs;
+            s.start_buffer_on_launch = start;
+            shared.mark_dirty();
+        }
+    }
+
+    fn recording_section(&mut self, ui: &mut egui::Ui, shared: &mut Shared) {
+        let mut mode = shared.settings.recording.mode;
         section(ui, shared, "Recording", |ui| {
             ui.radio_value(&mut mode, RecordMode::Manual, "Start and stop recordings myself");
             ui.label(RichText::new("     The Record button or hotkey starts a recording; pressing it again stops and saves it.").small());
@@ -123,12 +275,32 @@ impl SettingsTab {
             ui.add_space(4.0);
             ui.label(RichText::new("Recordings use the replay buffer's encoder (no extra load) and go to your clips folder.").small());
         });
-        let s = &mut shared.settings;
-        if secs != s.buffer_seconds || start != s.start_buffer_on_launch || mode != s.recording.mode {
-            s.buffer_seconds = secs;
-            s.start_buffer_on_launch = start;
-            s.recording.mode = mode;
+        if mode != shared.settings.recording.mode {
+            shared.settings.recording.mode = mode;
             shared.mark_dirty();
+        }
+    }
+
+    fn startup_section(&mut self, ui: &mut egui::Ui, shared: &mut Shared) {
+        let mut on = *self.startup.get_or_insert_with(crate::win::starts_with_windows);
+        let before = on;
+        let error_color = shared.theme.colors.error.0;
+        let error = self.startup_error.clone();
+        section(ui, shared, "Startup", |ui| {
+            ui.checkbox(&mut on, "Start Snag with Windows (quietly, in the tray)");
+            ui.label(RichText::new("Snag starts when you sign in, with no window, so clips are ready from your first game.").small());
+            if let Some(e) = &error {
+                ui.label(RichText::new(e).color(error_color).small());
+            }
+        });
+        if on != before {
+            match crate::win::set_start_with_windows(on) {
+                Ok(()) => {
+                    self.startup = Some(on);
+                    self.startup_error = None;
+                }
+                Err(e) => self.startup_error = Some(format!("Couldn't change this: {e:#}")),
+            }
         }
     }
 
@@ -327,6 +499,12 @@ impl SettingsTab {
                 ui.label("Live tab");
                 ui.checkbox(&mut u.live_preview, "Show the live preview (off saves a little CPU)");
                 ui.end_row();
+                ui.label("Buffer time");
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut u.badge_minutes, false, "Seconds (120 s)");
+                    ui.radio_value(&mut u.badge_minutes, true, "Minutes (2:00)");
+                });
+                ui.end_row();
             });
             ui.label(RichText::new("Tip: drag the tab bar's grip to any edge of the window.").small());
         });
@@ -383,7 +561,7 @@ impl SettingsTab {
                         edited.push((*which, PathBuf::from(text)));
                     }
                     ui.horizontal(|ui| {
-                        if ui.button("Browse...").clicked() {
+                        if ui.button("Browse").clicked() {
                             pick = Some((*which, path.clone()));
                         }
                         if ui.button("Open").clicked() {
@@ -441,7 +619,7 @@ impl SettingsTab {
                     let name = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                     ui.label("Sound");
                     ui.label(RichText::new(name).strong()).on_hover_text(file.display().to_string());
-                    choose = ui.button("Choose sound...").clicked();
+                    choose = ui.button("Choose sound").clicked();
                     if snd.file.is_some() && ui.button("Default").clicked() {
                         snd.file = None;
                     }

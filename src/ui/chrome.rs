@@ -304,7 +304,6 @@ pub enum Icon {
     Scissors,
     Gear,
     Monitor,
-    Palette,
 }
 
 fn arc(center: Pos2, r: f32, from: f32, to: f32) -> Vec<Pos2> {
@@ -356,11 +355,6 @@ pub fn paint_icon(p: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
             p.rect_stroke(Rect::from_min_max(at(-8.0, -6.5), at(8.0, 4.0)), 1.5 * u, s, egui::StrokeKind::Middle);
             p.line_segment([at(0.0, 4.0), at(0.0, 7.0)], s);
             p.line_segment([at(-4.0, 7.5), at(4.0, 7.5)], s);
-        }
-        Icon::Palette => {
-            p.circle_stroke(c, 7.5 * u, s);
-            let half: Vec<Pos2> = arc(c, 7.5 * u, std::f32::consts::FRAC_PI_2, std::f32::consts::FRAC_PI_2 * 3.0);
-            p.add(Shape::convex_polygon(half, color, Stroke::NONE));
         }
     }
 }

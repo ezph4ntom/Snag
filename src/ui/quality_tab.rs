@@ -14,10 +14,45 @@ pub struct QualityTab {
     detecting: Option<Receiver<HardwareInfo>>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QualitySection {
+    Hardware,
+    Preset,
+    Manual,
+}
+
 const HEIGHTS: [u32; 6] = [2160, 1440, 1080, 900, 720, 480];
 const FPS: [u32; 7] = [30, 60, 90, 120, 144, 165, 240];
 
 impl QualityTab {
+    /// Shows one section (the settings search uses this).
+    pub fn section_ui(&mut self, which: QualitySection, ui: &mut egui::Ui, shared: &mut Shared) {
+        self.poll(ui, shared);
+        let Some(hw) = shared.settings.hardware.clone() else {
+            ui.label("Hardware hasn't been detected yet.");
+            self.detect_button(ui);
+            return;
+        };
+        match which {
+            QualitySection::Hardware => self.hardware_section(ui, shared, &hw),
+            QualitySection::Preset => self.preset_section(ui, shared, &hw),
+            QualitySection::Manual => self.manual_section(ui, shared, &hw),
+        }
+    }
+
+    fn poll(&mut self, ui: &mut egui::Ui, shared: &mut Shared) {
+        if let Some(rx) = &self.detecting {
+            match rx.try_recv() {
+                Ok(hw) => {
+                    shared.settings.hardware = Some(hw);
+                    shared.mark_dirty();
+                    self.detecting = None;
+                }
+                Err(_) => ui.ctx().request_repaint_after(std::time::Duration::from_millis(100)),
+            }
+        }
+    }
+
     pub fn ui(&mut self, ui: &mut egui::Ui, shared: &mut Shared) {
         if let Some(rx) = &self.detecting {
             match rx.try_recv() {

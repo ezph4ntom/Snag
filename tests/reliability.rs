@@ -133,7 +133,7 @@ fn run(
         if let Some(wait) = pressed.checked_duration_since(Instant::now()) {
             std::thread::sleep(wait);
         }
-        let r = save_clip(&rec.session, pressed, CLIP_SECONDS, &clips_dir).unwrap_or_else(|e| panic!("clip {i}: {e:#}"));
+        let r = save_clip(&rec.session, pressed, CLIP_SECONDS, &clips_dir, None).unwrap_or_else(|e| panic!("clip {i}: {e:#}"));
         assert!(r.warnings.is_empty(), "clip {i} warnings: {:?}", r.warnings);
         save_times.push(r.took);
         if verify_after {

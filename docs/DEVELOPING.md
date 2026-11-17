@@ -220,7 +220,10 @@ ffmpeg details that matter (all measured; see comments in `src/encode/ffmpeg.rs`
 | `hotkeys/`, `app/` | hotkey parsing/registration, keyboard hook; core process (tray, focus hook, controller, IPC) | 3 hotkeys |
 | `sound.rs` | clip sound via `PlaySound` (no audio thread while idle) | 3 hotkeys |
 | `trimmer/`, `ui/trimmer_tab.rs` | probe, preview decoder, fast/precise export; trimmer UI | 4 trimmer |
-| `themes/`, `ui/appearance_tab.rs` | JSON themes, egui styling, hot reload | 5 themes |
+| `library.rs`, `ui/library_tab.rs` | clip library (favorites, collections, upload records in `library.json`), cards, thumbnails, Uploads list, Streamable login | library |
+| `upload/` | Streamable web-flow uploader, Litterbox, multipart HTTP over Windows TLS, Credential Manager | uploads |
+| `ui/search.rs` | the settings search (keywords and synonyms per section) | settings |
+| `themes/`, `ui/appearance_tab.rs` | JSON themes, egui styling, hot reload; the theme picker in Settings → Appearance | 5 themes |
 | `tune/`, `ui/quality_tab.rs` | hardware detection, presets, recommendation | 6 auto-tune |
 | `config/` | settings struct, load/save (atomic, BOM-tolerant) | all |
 | `verify.rs` | barcode test frames, clip verification (video + audio sync), live test-pattern window | tests |

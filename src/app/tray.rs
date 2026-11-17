@@ -60,8 +60,8 @@ impl Tray {
             &PredefinedMenuItem::separator(),
             &toggle,
             &MenuItem::with_id(ID_CLIPS, "Open clips folder", true, None),
-            &MenuItem::with_id(ID_TRIM, "Clips && trimmer...", true, None),
-            &MenuItem::with_id(ID_SETTINGS, "Settings...", true, None),
+            &MenuItem::with_id(ID_TRIM, "Clips", true, None),
+            &MenuItem::with_id(ID_SETTINGS, "Settings", true, None),
             &PredefinedMenuItem::separator(),
             &MenuItem::with_id(ID_QUIT, "Quit Snag", true, None),
         ])?;

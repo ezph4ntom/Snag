@@ -56,6 +56,7 @@ struct SaveJob {
     pressed_at: Instant,
     seconds: f64,
     out_dir: PathBuf,
+    app: Option<String>,
 }
 
 struct UiProcess {
@@ -94,6 +95,9 @@ pub struct Controller {
     /// Taskbar theme the tray icon was drawn for.
     light_taskbar: bool,
     last_clip: Option<PathBuf>,
+    /// The program the user was last in (not Snag or the shell): saved clips
+    /// are tagged with it. (pid, name)
+    last_app: Option<(u32, String)>,
     note: String,
     /// Auto-restart after a recorder failure, with backoff.
     restart_at: Option<Instant>,
@@ -112,7 +116,7 @@ impl Controller {
             .name("clip-saver".into())
             .spawn(move || {
                 for job in jobs {
-                    let result = save_clip(&job.session, job.pressed_at, job.seconds, &job.out_dir)
+                    let result = save_clip(&job.session, job.pressed_at, job.seconds, &job.out_dir, job.app.as_deref())
                         .map_err(|e| format!("{e:#}"));
                     if ev.send(Event::ClipDone(result)).is_err() {
                         break;
@@ -140,6 +144,7 @@ impl Controller {
             capture_started: None,
             light_taskbar: crate::win::taskbar_is_light(),
             last_clip: None,
+            last_app: None,
             note: String::new(),
             restart_at: None,
             restart_attempts: 0,
@@ -456,9 +461,10 @@ impl Controller {
         log::info!("quitting");
         // A manual recording is saved before quitting; unsaved whole-session
         // footage is discarded (that's what the mode promises).
+        let app = self.app_name();
         if let Some(rec) = self.recording.take() {
             let discard = self.settings.recording.mode == RecordMode::WholeSession;
-            let job = rec.stop(&self.settings.clips_dir, discard);
+            let job = rec.stop(&self.settings.clips_dir, discard, app);
             match job() {
                 Ok(r) => log::info!("recording saved on quit: {}", r.path.display()),
                 Err(e) => log::info!("recording on quit: {e:#}"),
@@ -542,6 +548,7 @@ impl Controller {
 
     fn save_clip(&mut self) {
         let pressed_at = Instant::now();
+        let app = self.app_name();
         let Some(rec) = &self.recorder else {
             self.note = "Replay buffer is off: nothing to save".into();
             log::warn!("{}", self.note);
@@ -553,6 +560,7 @@ impl Controller {
             pressed_at,
             seconds: self.settings.buffer_seconds as f64,
             out_dir: self.settings.clips_dir.clone(),
+            app,
         });
     }
 
@@ -580,6 +588,7 @@ impl Controller {
     /// The record button/hotkey. Manual mode: start or stop (stop saves).
     /// Whole-session mode: save everything recorded so far.
     fn record_button(&mut self) {
+        let app = self.app_name();
         match self.settings.recording.mode {
             RecordMode::Manual if self.want_recording => {
                 self.want_recording = false;
@@ -597,7 +606,7 @@ impl Controller {
             }
             RecordMode::WholeSession => match &self.recording {
                 Some(rec) => {
-                    let job = rec.snapshot_job(&self.settings.clips_dir);
+                    let job = rec.snapshot_job(&self.settings.clips_dir, app);
                     self.run_save_job(job);
                     self.note = "Saving the session so far (recording continues)...".into();
                 }
@@ -626,8 +635,9 @@ impl Controller {
 
     /// Stops the current recording and saves it (or discards it).
     fn finish_recording(&mut self, discard: bool) {
+        let app = self.app_name();
         if let Some(rec) = self.recording.take() {
-            let job = rec.stop(&self.settings.clips_dir, discard);
+            let job = rec.stop(&self.settings.clips_dir, discard, app);
             self.run_save_job(job);
         }
     }
@@ -658,6 +668,33 @@ impl Controller {
 
     // ---- focus tracking ----------------------------------------------------
 
+    /// Notes which program has focus, for tagging clips. Looked up once per
+    /// process (a version-resource read, well under a millisecond).
+    fn remember_app(&mut self, pid: u32) {
+        if self.last_app.as_ref().is_some_and(|(p, _)| *p == pid) || pid == std::process::id() {
+            return;
+        }
+        if let Some(name) = crate::win::app_display_name(pid) {
+            self.last_app = Some((pid, name));
+        }
+    }
+
+    /// The program a clip saved now comes from.
+    fn app_name(&mut self) -> Option<String> {
+        // SAFETY: plain Win32 calls.
+        let pid = unsafe {
+            use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(GetForegroundWindow(), Some(&mut pid));
+            pid
+        };
+        let ui_pid = self.ui.as_ref().map(|u| u.child.id());
+        if pid != 0 && Some(pid) != ui_pid {
+            self.remember_app(pid);
+        }
+        self.last_app.as_ref().map(|(_, n)| n.clone())
+    }
+
     fn on_foreground(&mut self, monitor: isize, pid: u32, class: &str) {
         // Ignore our own UI and shell transients (Alt+Tab switcher, Start
         // menu, notification popups...) that briefly take focus.
@@ -675,6 +712,7 @@ impl Controller {
             return;
         }
         self.check_elevated_foreground(pid);
+        self.remember_app(pid);
         self.focused_monitor = monitor;
         if self.settings.capture.mode == CaptureMode::FollowFocus {
             self.pending_switch = Some((monitor, Instant::now()));

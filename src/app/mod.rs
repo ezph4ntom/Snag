@@ -264,7 +264,7 @@ pub fn quit_running_instance() -> bool {
 /// Entry point of the core (tray) process. `replace`: a running instance is
 /// asked to quit and this one takes over (used by "Restart as
 /// administrator").
-pub fn run_core(replace: bool) -> Result<()> {
+pub fn run_core(replace: bool, background: bool) -> Result<()> {
     crate::win::set_dpi_awareness();
     crate::logging::init("core");
     log::info!(
@@ -287,6 +287,10 @@ pub fn run_core(replace: bool) -> Result<()> {
             // The mutex is released (abandoned) when the old instance exits.
             let r = windows::Win32::System::Threading::WaitForSingleObject(mutex, 15_000);
             log::info!("took over from the previous instance (wait result {:#x})", r.0);
+        } else if GetLastError() == ERROR_ALREADY_EXISTS && background {
+            // Started with Windows while Snag already runs: nothing to do.
+            log::info!("already running; background start ignored");
+            return Ok(());
         } else if GetLastError() == ERROR_ALREADY_EXISTS {
             let args: Vec<String> = std::env::args().collect();
             let tab = args.iter().position(|a| a == "--tab").and_then(|i| args.get(i + 1));

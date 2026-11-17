@@ -27,6 +27,7 @@ pub struct Settings {
     pub sound: SoundSettings,
     pub trimmer: TrimmerSettings,
     pub recording: RecordingSettings,
+    pub uploads: UploadSettings,
     /// Theme id = file name in `themes/` without `.json`.
     pub theme: String,
     /// Window layout: size, tab bar position and style.
@@ -49,6 +50,7 @@ impl Default for Settings {
             sound: SoundSettings::default(),
             trimmer: TrimmerSettings::default(),
             recording: RecordingSettings::default(),
+            uploads: UploadSettings::default(),
             theme: "daylight".into(),
             ui: UiSettings::default(),
             hardware: None,
@@ -76,11 +78,13 @@ pub struct UiSettings {
     /// Show the live preview on the Live tab (off = no preview frames are
     /// made at all).
     pub live_preview: bool,
+    /// The title bar shows the buffered time as 2:00 instead of 120 s.
+    pub badge_minutes: bool,
 }
 
 impl Default for UiSettings {
     fn default() -> Self {
-        Self { scale: 1.0, tab_dock: TabDock::Top, icon_tabs: false, live_preview: true }
+        Self { scale: 1.0, tab_dock: TabDock::Top, icon_tabs: false, live_preview: true, badge_minutes: false }
     }
 }
 
@@ -326,10 +330,24 @@ impl Default for TrimmerSettings {
     }
 }
 
+/// Sharing clips as links.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct UploadSettings {
+    /// How long Litterbox keeps a clip: 1, 12, 24 or 72 hours.
+    pub litterbox_hours: u32,
+}
+
+impl Default for UploadSettings {
+    fn default() -> Self {
+        Self { litterbox_hours: 72 }
+    }
+}
+
 impl Settings {
     /// Clamps values a hand-edited file could have broken.
     pub fn sanitize(&mut self) {
-        self.buffer_seconds = self.buffer_seconds.clamp(5, 600);
+        self.buffer_seconds = self.buffer_seconds.clamp(5, 900);
         self.video.fps = self.video.fps.clamp(10, 240);
         self.video.bitrate_kbps = self.video.bitrate_kbps.clamp(500, 200_000);
         if self.video.output_height != 0 {
@@ -337,6 +355,9 @@ impl Settings {
         }
         self.sound.volume = self.sound.volume.clamp(0.0, 1.0);
         self.trimmer.preview_volume = self.trimmer.preview_volume.clamp(0.0, 1.0);
+        if !crate::upload::litterbox::HOURS.contains(&self.uploads.litterbox_hours) {
+            self.uploads.litterbox_hours = 72;
+        }
         self.audio.bitrate_kbps = self.audio.bitrate_kbps.clamp(64, 320);
         for a in &mut self.audio.apps {
             a.volume = a.volume.clamp(0.0, 1.0);

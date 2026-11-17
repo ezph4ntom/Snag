@@ -50,7 +50,7 @@ key or combination (Esc cancels).
 - [ ] Live tab: the preview looks sharp; "Hide preview" / "Enable preview" work
 - [ ] Window: drag the tab bar to another edge; maximize/snap/resize the window
 - [ ] Does your game's FPS drop noticeably while Snag runs? (Try the Performance preset in the Quality tab if so.)
-- [ ] Switching themes in the Appearance tab
+- [ ] Switching themes in Settings → Appearance
 
 ## 4. Send feedback
 

@@ -150,7 +150,7 @@ fn record(selection: AudioSettings, name: &str) -> Vec<f32> {
     }
     let sources = snag::audio::mixer::capture_state();
     println!("{name}: recording from {:?} {:?}", sources.sources, sources.note);
-    let clip = save_clip(&rec.session, Instant::now(), 3.0, &root).unwrap().path;
+    let clip = save_clip(&rec.session, Instant::now(), 3.0, &root, Some("Test Game")).unwrap().path;
     rec.stop();
     let out = Command::new(snag::paths::ffmpeg_exe())
         .args(["-v", "error", "-i"])
