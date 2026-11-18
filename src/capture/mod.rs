@@ -17,6 +17,7 @@ pub mod d3d;
 pub mod preview;
 pub mod screenshot;
 pub mod wgc;
+pub mod window;
 
 use windows::Win32::Foundation::{HWND, LPARAM, RECT};
 use windows::Win32::Graphics::Gdi::{

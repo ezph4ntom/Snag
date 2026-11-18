@@ -149,6 +149,9 @@ pub enum CaptureMode {
     FollowFocus,
     /// Always capture `fixed_monitor`.
     Fixed,
+    /// Capture only one app's window (`window_exe`), wherever it is and
+    /// whatever is in front of it.
+    Window,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -158,6 +161,11 @@ pub struct CaptureSettings {
     /// GDI device name like `\\.\DISPLAY2`. Empty = primary monitor.
     pub fixed_monitor: String,
     pub capture_cursor: bool,
+    /// Window mode: the app's exe file name (`game.exe`), found again after
+    /// restarts, and its window title when it was picked (preferred when
+    /// the app has several windows).
+    pub window_exe: String,
+    pub window_title: String,
 }
 
 impl Default for CaptureSettings {
@@ -166,6 +174,8 @@ impl Default for CaptureSettings {
             mode: CaptureMode::FollowFocus,
             fixed_monitor: String::new(),
             capture_cursor: true,
+            window_exe: String::new(),
+            window_title: String::new(),
         }
     }
 }
@@ -427,4 +437,33 @@ pub fn save_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     std::fs::write(&tmp, text).with_context(|| format!("writing {}", tmp.display()))?;
     std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capture_settings_load_old_and_new() {
+        // Written by 0.6.6 and older: no window fields.
+        let old: Settings = serde_json::from_str(r#"{"capture":{"mode":"Fixed","fixed_monitor":"\\\\.\\DISPLAY2","capture_cursor":false}}"#).unwrap();
+        assert_eq!(old.capture.mode, CaptureMode::Fixed);
+        assert_eq!(old.capture.fixed_monitor, r"\\.\DISPLAY2");
+        assert!(!old.capture.capture_cursor);
+        assert_eq!((old.capture.window_exe.as_str(), old.capture.window_title.as_str()), ("", ""));
+
+        let new: Settings = serde_json::from_str(
+            r#"{"capture":{"mode":"Window","window_exe":"notepad.exe","window_title":"Untitled - Notepad"}}"#,
+        )
+        .unwrap();
+        assert_eq!(new.capture.mode, CaptureMode::Window);
+        assert_eq!(new.capture.window_exe, "notepad.exe");
+        assert!(new.capture.capture_cursor, "missing fields keep their defaults");
+
+        // And back.
+        let json = serde_json::to_string(&new).unwrap();
+        let again: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(again.capture, new.capture);
+        assert_eq!(Settings::default().capture.mode, CaptureMode::FollowFocus);
+    }
 }

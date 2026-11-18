@@ -980,8 +980,11 @@ impl eframe::App for App {
                         if self.trimmer.ui(ui, &mut self.shared) {
                             self.trimmer.close();
                         }
-                    } else if let Some(p) = self.library.ui(ui, &mut self.shared) {
-                        self.trimmer.load(p);
+                    } else {
+                        self.library.trimmer_files = self.trimmer.files_in_use();
+                        if let Some(p) = self.library.ui(ui, &mut self.shared) {
+                            self.trimmer.load(p);
+                        }
                     }
                 }
                 Tab::Settings => {
@@ -1009,6 +1012,9 @@ impl eframe::App for App {
             None => {}
         }
         self.library.modals(&ctx, &self.shared);
+        if std::mem::take(&mut self.library.clips_changed) {
+            self.live.rescan();
+        }
         self.close_dialog(&ctx);
         self.dock_preview(&ctx);
         self.draw_toast(&ctx);

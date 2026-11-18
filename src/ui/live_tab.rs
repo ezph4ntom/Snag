@@ -2,7 +2,8 @@
 //!
 //! Left: status, the live preview (switchable off: then no preview frames
 //! are made at all), and Save clip / Screenshot / Record / Stop buffer.
-//! Right: "Sound in clips" (quick volume sliders) and the latest clips.
+//! Right: "Sources" (what is recorded: a monitor, or only one app),
+//! "Sound in clips" (quick volume sliders) and the latest clips.
 //!
 //! The preview picture comes from the core's recorder (see
 //! `capture::preview`), so it shows exactly the monitor being captured and
@@ -18,6 +19,8 @@ use eframe::egui::{self, Color32, CornerRadius, Rect, RichText, Sense, TextureOp
 use super::widgets::{fmt_duration, status_pill};
 use super::{Shared, dim};
 use crate::app::ipc::UiToCore;
+use crate::capture::window::AppWindow;
+use crate::config::CaptureMode;
 
 /// What the Live tab asks the window to do.
 pub enum LiveAction {
@@ -49,6 +52,10 @@ pub struct LiveTab {
     /// path -> (texture, seconds); `None` texture while being made.
     thumbs: HashMap<PathBuf, (Option<egui::TextureHandle>, Option<f64>)>,
     worker: Option<(Sender<PathBuf>, Receiver<Thumb>)>,
+    monitors: Option<Vec<crate::capture::MonitorInfo>>,
+    /// The "Record one app" picker is open, with the windows listed when
+    /// it opened (only listed then, and on Refresh).
+    picker: Option<Vec<AppWindow>>,
 }
 
 impl LiveTab {
@@ -80,6 +87,8 @@ impl LiveTab {
             });
             ui.allocate_ui_with_layout(vec2(right_w, avail.y), egui::Layout::top_down(egui::Align::Min), |ui| {
                 egui::ScrollArea::vertical().id_salt("live-side").auto_shrink([false, false]).show(ui, |ui| {
+                    self.sources(ui, shared);
+                    ui.add_space(14.0);
                     card(ui, shared, "Sound in clips", |ui, shared| sound.compact(ui, shared));
                     ui.add_space(14.0);
                     if let Some(a) = self.recent_clips(ui, shared) {
@@ -88,7 +97,114 @@ impl LiveTab {
                 });
             });
         });
+        self.picker_dialog(ui.ctx(), shared);
         action
+    }
+
+    /// What is recorded: follow focus, one monitor, or only one app.
+    fn sources(&mut self, ui: &mut egui::Ui, shared: &mut Shared) {
+        let monitors = self.monitors.get_or_insert_with(crate::capture::enumerate_monitors).clone();
+        let mut cap = shared.settings.capture.clone();
+        let mut open_picker = false;
+        let status = shared.status.clone().filter(|s| shared.connected && s.recording);
+        card(ui, shared, "Sources", |ui, shared| {
+            let c = shared.theme.colors.clone();
+            if ui.radio(cap.mode == CaptureMode::FollowFocus, "Screen: follow focus").on_hover_text("The monitor with the active window").clicked() {
+                cap.mode = CaptureMode::FollowFocus;
+            }
+            for m in &monitors {
+                let on = cap.mode == CaptureMode::Fixed
+                    && (cap.fixed_monitor == m.device_name || (cap.fixed_monitor.is_empty() && m.primary));
+                let name = format!("{} {}x{}{}", m.device_name.trim_start_matches(r"\\.\"), m.width, m.height, if m.primary { " (primary)" } else { "" });
+                if ui.radio(on, name).on_hover_text("Always this monitor").clicked() {
+                    cap.mode = CaptureMode::Fixed;
+                    cap.fixed_monitor = m.device_name.clone();
+                }
+            }
+            let app_on = cap.mode == CaptureMode::Window && !cap.window_exe.is_empty();
+            ui.horizontal(|ui| {
+                let label = if cap.window_exe.is_empty() { "App or game...".to_string() } else { format!("Only {}", cap.window_exe) };
+                let r = ui.radio(app_on, label).on_hover_text("Record one app's window: other windows never show up, even after Alt-Tab");
+                if r.clicked() {
+                    if cap.window_exe.is_empty() {
+                        open_picker = true;
+                    } else {
+                        cap.mode = CaptureMode::Window;
+                    }
+                }
+                if !cap.window_exe.is_empty() && ui.small_button("Choose...").on_hover_text("Pick another app").clicked() {
+                    open_picker = true;
+                }
+            });
+            if app_on {
+                let waiting = status.as_ref().is_some_and(|s| s.app_waiting);
+                let (text, col) = if waiting {
+                    (format!("Waiting for {}: it's closed or minimized, so clips show black until it's back.", cap.window_exe), c.warning.0)
+                } else {
+                    (format!("Only {} is recorded, even when other windows are in front.", cap.window_exe), c.text_dim.0)
+                };
+                ui.label(RichText::new(text).small().color(col));
+                ui.label(dim(shared, "Games in exclusive fullscreen can record black: use borderless or windowed.").small());
+            }
+        });
+        if open_picker {
+            self.picker = Some(crate::capture::window::list());
+        }
+        if cap != shared.settings.capture {
+            shared.settings.capture = cap;
+            shared.mark_dirty();
+        }
+    }
+
+    /// "Record one app": the open windows, front first.
+    fn picker_dialog(&mut self, ctx: &egui::Context, shared: &mut Shared) {
+        let Some(list) = &self.picker else { return };
+        let c = shared.theme.colors.clone();
+        let mut chosen = None;
+        let (mut refresh, mut cancel) = (false, false);
+        let resp = egui::Modal::new(egui::Id::unique("app-picker")).show(ctx, |ui| {
+            ui.set_width(460.0);
+            ui.label(RichText::new("Record one app").family(crate::themes::brand_bold_family()).size(shared.theme.fonts.body + 5.0));
+            ui.add_space(4.0);
+            ui.label(dim(shared, "Only its window is recorded, even when others cover it. Snag finds it again by its program name when it restarts."));
+            ui.add_space(10.0);
+            egui::ScrollArea::vertical().max_height(340.0).show(ui, |ui| {
+                if list.is_empty() {
+                    ui.label(dim(shared, "No app windows are open. Start the game, then press Refresh."));
+                }
+                for w in list {
+                    let mut text = egui::text::LayoutJob::default();
+                    let font = egui::FontId::proportional(shared.theme.fonts.body);
+                    text.append(&w.exe, 0.0, egui::TextFormat::simple(font.clone(), c.text.0));
+                    text.append(&format!("   {}", w.title), 0.0, egui::TextFormat::simple(font, c.text_dim.0));
+                    let b = egui::Button::new(text).min_size(vec2(ui.available_width(), 36.0)).truncate();
+                    if ui.add(b).on_hover_text(&w.title).clicked() {
+                        chosen = Some(w.clone());
+                    }
+                }
+            });
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                if ui.button("Refresh").clicked() {
+                    refresh = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    cancel = true;
+                }
+            });
+        });
+        if let Some(w) = chosen {
+            let cap = &mut shared.settings.capture;
+            cap.mode = CaptureMode::Window;
+            cap.window_exe = w.exe;
+            cap.window_title = w.title;
+            shared.mark_dirty();
+            self.picker = None;
+        } else if refresh {
+            self.picker = Some(crate::capture::window::list());
+        } else if cancel || resp.should_close() {
+            self.picker = None;
+        }
     }
 
     fn main_column(&mut self, ui: &mut egui::Ui, shared: &mut Shared) {
@@ -114,7 +230,10 @@ impl LiveTab {
                 }
             }
             if let Some(s) = status.as_ref().filter(|s| s.recording) {
-                let monitor = s.monitor.split_whitespace().next().unwrap_or("").to_string();
+                let monitor = match &s.capturing_app {
+                    Some(app) => app.clone(),
+                    None => s.monitor.split_whitespace().next().unwrap_or("").to_string(),
+                };
                 ui.label(dim(shared, format!("{monitor} · {} · {} fps · last {} s kept", s.resolution, s.fps, shared.settings.buffer_seconds)));
                 if s.frames_dropped > 0 {
                     ui.label(RichText::new(format!("{} dropped", s.frames_dropped)).color(c.warning.0))
@@ -153,6 +272,10 @@ impl LiveTab {
             let scale = (rect.width() / w).min(rect.height() / h);
             let img = Rect::from_center_size(rect.center(), vec2(w * scale, h * scale));
             ui.painter().image(tex.id(), img, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+            if let Some(app) = status.as_ref().filter(|s| s.app_waiting).and_then(|s| s.capturing_app.clone()) {
+                let text = format!("Waiting for {app}...");
+                ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(15.0), Color32::from_gray(170));
+            }
         } else {
             let text = if !shared.connected {
                 "The Snag tray app isn't running"
@@ -211,6 +334,11 @@ impl LiveTab {
                 }
             });
         });
+    }
+
+    /// Reads the clips folder again next frame (a clip was deleted).
+    pub fn rescan(&mut self) {
+        self.last_scan = None;
     }
 
     /// The latest clips with thumbnails; clicking one opens it.

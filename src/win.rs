@@ -1,5 +1,6 @@
 //! Small Win32 helpers shared by several modules.
 
+use std::os::windows::ffi::OsStrExt;
 use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::process::Command;
@@ -426,6 +427,39 @@ mod link_tests {
             assert!(!super::is_web_link(bad), "{bad:?}");
         }
     }
+}
+
+/// Moves a file to the Recycle Bin. Where there is no Recycle Bin (some
+/// USB and network drives) or the file is too big for it, Windows asks
+/// before deleting it for good instead of doing it silently.
+pub fn recycle(path: &Path) -> anyhow::Result<()> {
+    use windows::Win32::UI::Shell::{
+        FO_DELETE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, FOF_WANTNUKEWARNING, SHFILEOPSTRUCTW,
+        SHFileOperationW,
+    };
+    use windows::core::PCWSTR;
+    // pFrom is a list of paths ending with an empty one: two NULs at the end.
+    let mut from: Vec<u16> = path.as_os_str().encode_wide().collect();
+    from.extend([0, 0]);
+    let flags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI | FOF_WANTNUKEWARNING;
+    let mut op = SHFILEOPSTRUCTW {
+        wFunc: FO_DELETE,
+        pFrom: PCWSTR(from.as_ptr()),
+        fFlags: flags.0 as u16,
+        ..Default::default()
+    };
+    // SAFETY: `from` is double-NUL terminated and outlives the call.
+    let code = unsafe { SHFileOperationW(&mut op) };
+    if op.fAnyOperationsAborted.as_bool() {
+        anyhow::bail!("cancelled");
+    }
+    if code != 0 {
+        anyhow::bail!("Windows refused (code {code:#x})");
+    }
+    if path.exists() {
+        anyhow::bail!("the file is still there");
+    }
+    Ok(())
 }
 
 /// Opens a file with its default program, or a link in the browser.

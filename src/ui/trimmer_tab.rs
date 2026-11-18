@@ -65,6 +65,8 @@ enum ExportMsg {
 }
 
 struct Export {
+    /// The clip being trimmed.
+    source: PathBuf,
     rx: Receiver<ExportMsg>,
     progress: f32,
     cancel: Arc<AtomicBool>,
@@ -175,6 +177,14 @@ impl TrimmerTab {
     /// A clip is open (or opening) in the editor.
     pub fn is_open(&self) -> bool {
         self.loaded.is_some() || self.loading.is_some()
+    }
+
+    /// Files the trimmer is using (open, opening or being exported).
+    pub fn files_in_use(&self) -> Vec<PathBuf> {
+        let open = self.loaded.as_ref().map(|l| l.probe.path.clone());
+        let loading = self.loading.as_ref().map(|(p, _)| p.clone());
+        let export = self.export.as_ref().map(|e| e.source.clone());
+        [open, loading, export].into_iter().flatten().collect()
     }
 
     /// Back to the library: closes the clip (and its decoder).
@@ -427,7 +437,7 @@ impl TrimmerTab {
             let _ = tx.send(ExportMsg::Done(result.map_err(|e| format!("{e:#}"))));
         });
         self.message = None;
-        self.export = Some(Export { rx, progress: 0.0, cancel, overwrite });
+        self.export = Some(Export { source: l.probe.path.clone(), rx, progress: 0.0, cancel, overwrite });
     }
 }
 

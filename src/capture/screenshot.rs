@@ -73,9 +73,13 @@ pub fn frame_texture(
 
 /// One-shot capture for when the replay buffer isn't running: starts a WGC
 /// session, waits for the first frame, copies it out, stops.
-pub fn capture_once(monitor: isize, capture_cursor: bool) -> Result<BgraImage> {
+/// `window`: capture only that window instead of `monitor`.
+pub fn capture_once(monitor: isize, window: Option<isize>, capture_cursor: bool) -> Result<BgraImage> {
     let d3d = D3D::new()?;
-    let cap = WgcCapture::start(&d3d, monitor, capture_cursor)?;
+    let cap = match window {
+        Some(hwnd) => WgcCapture::start_for_window(&d3d, hwnd, capture_cursor)?,
+        None => WgcCapture::start(&d3d, monitor, capture_cursor)?,
+    };
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         if let Some(frame) = cap.take_latest() {

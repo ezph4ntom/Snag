@@ -16,7 +16,7 @@ use anyhow::{Context, Result};
 use super::ipc::{CoreStatus, CoreToUi, UiToCore};
 use super::{MainRequest, post_to_main};
 use crate::buffer::clip::{ClipResult, save_clip};
-use crate::buffer::source::{FrameSource, WgcSource};
+use crate::buffer::source::{FrameSource, Source, WgcSource, WindowTarget};
 use crate::buffer::{Recorder, RecorderConfig, Session, SourceFactory};
 use crate::config::{AfterClip, CaptureMode, RecordMode, Settings};
 
@@ -481,11 +481,25 @@ impl Controller {
 
     fn target_monitor(&self) -> isize {
         match self.settings.capture.mode {
-            CaptureMode::FollowFocus if self.focused_monitor != 0 => self.focused_monitor,
-            CaptureMode::FollowFocus => foreground_monitor(),
+            CaptureMode::FollowFocus | CaptureMode::Window if self.focused_monitor != 0 => self.focused_monitor,
+            CaptureMode::FollowFocus | CaptureMode::Window => foreground_monitor(),
             CaptureMode::Fixed => crate::capture::monitor_by_name(&self.settings.capture.fixed_monitor)
                 .map(|m| m.handle)
                 .unwrap_or(0),
+        }
+    }
+
+    /// The app to capture in window mode (None: capture monitors).
+    fn window_target(&self) -> Option<WindowTarget> {
+        let c = &self.settings.capture;
+        (c.mode == CaptureMode::Window && !c.window_exe.is_empty())
+            .then(|| WindowTarget { exe: c.window_exe.clone(), title: c.window_title.clone() })
+    }
+
+    fn source(&self) -> Source {
+        match self.window_target() {
+            Some(t) => Source::Window(t),
+            None => Source::Monitor(self.target_monitor()),
         }
     }
 
@@ -495,6 +509,7 @@ impl Controller {
         }
         let v = &self.settings.video;
         let (w, h) = crate::capture::output_size(v.output_height);
+        let source = self.source();
         let monitor = self.target_monitor();
         self.session_counter += 1;
         let cfg = RecorderConfig {
@@ -516,17 +531,21 @@ impl Controller {
                 as crate::audio::AudioSourceFactory
         });
         let cursor = self.settings.capture.capture_cursor;
+        let what = match &source {
+            Source::Window(t) => t.exe.clone(),
+            Source::Monitor(_) => format!("monitor {}", monitor_name(monitor)),
+        };
         let source: SourceFactory =
-            Box::new(move || Ok(Box::new(WgcSource::new(monitor, w, h, cursor)?) as Box<dyn FrameSource>));
+            Box::new(move || Ok(Box::new(WgcSource::new(source, w, h, cursor)?) as Box<dyn FrameSource>));
         log::info!(
-            "starting replay buffer: {}s, {}x{} @ {} fps, {} kbps, {}, monitor {}",
+            "starting replay buffer: {}s, {}x{} @ {} fps, {} kbps, {}, {}",
             self.settings.buffer_seconds,
             w,
             h,
             v.fps,
             v.bitrate_kbps,
             v.encoder.label(),
-            monitor_name(monitor)
+            what
         );
         match Recorder::start(cfg, source, audio) {
             Ok(r) => {
@@ -569,13 +588,19 @@ impl Controller {
         let events = self.events.clone();
         let handle = self.recorder.as_ref().filter(|r| r.session.start_instant().is_some()).map(|r| r.screenshot_handle());
         let monitor = self.target_monitor();
+        let window = self.window_target();
         let cursor = self.settings.capture.capture_cursor;
         // Grab the pixels quickly, encode the PNG on a worker thread.
         std::thread::spawn(move || {
             let result = (|| -> Result<PathBuf> {
-                let img = match handle {
-                    Some(h) => h.take()?,
-                    None => crate::capture::screenshot::capture_once(monitor, cursor)?,
+                let img = match (handle, window) {
+                    (Some(h), _) => h.take()?,
+                    (None, Some(t)) => {
+                        let hwnd = crate::capture::window::find(&t.exe, &t.title)
+                            .with_context(|| format!("{} isn't running", t.exe))?;
+                        crate::capture::screenshot::capture_once(monitor, Some(hwnd), cursor)?
+                    }
+                    (None, None) => crate::capture::screenshot::capture_once(monitor, None, cursor)?,
                 };
                 crate::capture::screenshot::save_screenshot(&img, &dir)
             })();
@@ -778,9 +803,8 @@ impl Controller {
             self.stop_buffer();
             self.start_buffer();
         } else if old.capture != self.settings.capture {
-            let target = self.target_monitor();
             if let Some(rec) = &self.recorder {
-                rec.switch_monitor(target);
+                rec.set_source(self.source());
             }
         }
         self.update_tray();
@@ -845,6 +869,10 @@ impl Controller {
                 s.resolution = format!("{}x{}", ss.width, ss.height);
                 s.fps = ss.fps;
                 s.monitor = monitor_name(ss.monitor.load(Ordering::Relaxed));
+                if let Some(t) = self.window_target() {
+                    s.capturing_app = Some(t.exe.clone());
+                    s.app_waiting = ss.waiting.load(Ordering::Relaxed);
+                }
                 s.frames_encoded = ss.stats.frames_encoded.load(Ordering::Relaxed);
                 s.frames_dropped = ss.stats.frames_dropped.load(Ordering::Relaxed);
                 s.audio = ss.audio;

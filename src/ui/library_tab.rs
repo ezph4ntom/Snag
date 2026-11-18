@@ -130,6 +130,8 @@ enum Action {
     ToggleName(PathBuf),
     StartRename(PathBuf),
     Rename(PathBuf, String),
+    /// Ask to move the clip to the Recycle Bin.
+    Delete(PathBuf),
 }
 
 #[derive(Default)]
@@ -170,6 +172,15 @@ pub struct LibraryTab {
     renaming: Option<(PathBuf, String)>,
     frame: u64,
     login: LoginForm,
+    /// The clip the "Move to the Recycle Bin?" dialog is about.
+    confirm_delete: Option<PathBuf>,
+    /// The Delete key was pressed this frame (and may delete a clip).
+    delete_key: bool,
+    /// Files the trimmer is using (set by the window every frame); they
+    /// can't be deleted.
+    pub trimmer_files: Vec<PathBuf>,
+    /// A clip was deleted (the Live tab's recent clips need a rescan).
+    pub clips_changed: bool,
     /// Messages for the window's toast.
     pub toasts: Vec<String>,
 }
@@ -207,6 +218,10 @@ impl LibraryTab {
             renaming: None,
             frame: 0,
             login: LoginForm::default(),
+            confirm_delete: None,
+            delete_key: false,
+            trimmer_files: Vec::new(),
+            clips_changed: false,
             toasts: Vec::new(),
         }
     }
@@ -485,6 +500,13 @@ impl LibraryTab {
             });
 
         let mut actions = Vec::new();
+        // The Delete key works on the clip under the mouse, or the one with
+        // keyboard focus (not while typing).
+        let delete_key = self.confirm_delete.is_none()
+            && self.renaming.is_none()
+            && !ui.ctx().text_edit_focused()
+            && ui.input(|i| i.key_pressed(egui::Key::Delete));
+        self.delete_key = delete_key;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             if shown.is_empty() {
                 ui.add_space(40.0);
@@ -540,7 +562,7 @@ impl LibraryTab {
                         );
                         row_ui.spacing_mut().item_spacing.x = GAP;
                         for &i in row {
-                            row_ui.allocate_ui_with_layout(vec2(item_w, item_h), egui::Layout::top_down(egui::Align::Min), |ui| {
+                            let item = row_ui.allocate_ui_with_layout(vec2(item_w, item_h), egui::Layout::top_down(egui::Align::Min), |ui| {
                                 ui.set_width(item_w);
                                 match view {
                                     ClipView::Grid => self.card(ui, shared, i, item_w, &mut actions),
@@ -548,6 +570,10 @@ impl LibraryTab {
                                     ClipView::List => self.list_row(ui, shared, i, item_w, &mut actions),
                                 }
                             });
+                            let c = &self.clips[i];
+                            if delete_key && c.collection.is_none() && row_ui.rect_contains_pointer(item.response.rect) {
+                                actions.push(Action::Delete(c.path.clone()));
+                            }
                         }
                     }
                     ui.allocate_space(vec2(avail, item_h));
@@ -600,7 +626,61 @@ impl LibraryTab {
             }
             Action::Cancel(p) => self.uploader.cancel(&p),
             Action::Dismiss(p) => self.uploader.dismiss(&p),
+            Action::Delete(p) => match self.why_not_delete(&p, shared) {
+                Some(why) => self.toasts.push(why),
+                None => self.confirm_delete = Some(p),
+            },
         }
+    }
+
+    fn file_name(path: &Path) -> String {
+        path.file_name().unwrap_or_default().to_string_lossy().into_owned()
+    }
+
+    /// Why this clip can't be deleted right now (None = it can).
+    fn why_not_delete(&self, path: &Path, shared: &Shared) -> Option<String> {
+        let name = Self::file_name(path);
+        if matches!(self.uploader.view(path), Some(View::Busy { .. })) {
+            return Some(format!("Can't delete {name}: it's uploading. Cancel the upload first."));
+        }
+        if self.trimmer_files.iter().any(|p| p == path) {
+            return Some(format!("Can't delete {name}: the trimmer is using it. Wait for the export to finish."));
+        }
+        crate::library::deletable(path, &shared.settings.clips_dir).err().map(|e| format!("Can't delete {name}: {e}."))
+    }
+
+    /// Moves a clip to the Recycle Bin and forgets what the library knew
+    /// about it. Upload records stay: the Uploads list keeps the links to
+    /// copies that are still online.
+    fn delete(&mut self, path: &Path, shared: &Shared) -> Result<(), String> {
+        if let Some(why) = self.why_not_delete(path, shared) {
+            return Err(why);
+        }
+        let real = crate::library::deletable(path, &shared.settings.clips_dir)?;
+        let ident = self.clips.iter().find(|c| c.path == path).map(|c| (c.stamp, c.size));
+        crate::win::recycle(&real).map_err(|e| format!("Couldn't delete {}: {e:#}", Self::file_name(path)))?;
+        log::info!("moved {} to the Recycle Bin", path.display());
+        if self.store.favorites.remove(path) {
+            self.store.save();
+        }
+        self.uploader.dismiss(path);
+        if self.meta.remove(path).is_some() {
+            self.meta_dirty = Some(Instant::now());
+        }
+        self.thumbs.remove(path);
+        self.thumb_ident.remove(path);
+        self.show_file.remove(path);
+        // The cached thumbnails (Clips tab and Live tab).
+        if let Some((stamp, size)) = ident {
+            let dir = crate::paths::thumbs_dir();
+            let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+            let _ = std::fs::remove_file(dir.join(format!("{:016x}-{stamp}-{size}-{THUMB_W}.png", path_hash(path))));
+            let _ = std::fs::remove_file(dir.join(format!("{stem}-{stamp}.png")));
+        }
+        self.clips.retain(|c| c.path != path);
+        self.last_scan = None;
+        self.clips_changed = true;
+        Ok(())
     }
 
     fn start_upload(&mut self, path: &Path, force: Option<Host>, shared: &Shared) {
@@ -731,6 +811,7 @@ impl LibraryTab {
         let seconds = self.seconds(clip);
         let favorite = self.store.favorites.contains(&path);
         let (trimmed, ident) = (clip.trimmed, (clip.stamp, clip.size));
+        let can_delete = clip.collection.is_none();
         let radius = if small { 6.0 } else { 10.0 };
 
         let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
@@ -797,10 +878,13 @@ impl LibraryTab {
         if resp.clicked() && !star_clicked {
             actions.push(Action::Open(path.clone()));
         }
+        if self.delete_key && can_delete && resp.has_focus() {
+            actions.push(Action::Delete(path.clone()));
+        }
         let upload = self.store.upload_of(&path).cloned();
         resp.on_hover_text("Open in the trimmer")
             .on_hover_cursor(egui::CursorIcon::PointingHand)
-            .context_menu(|ui| clip_menu(ui, &path, favorite, upload.as_ref(), actions));
+            .context_menu(|ui| clip_menu(ui, &path, favorite, upload.as_ref(), can_delete, actions));
     }
 
     /// Grid view: a big thumbnail, the title, then time/size | Upload | Trim.
@@ -1293,8 +1377,47 @@ impl LibraryTab {
 
     // ---- the login card -------------------------------------------------------
 
-    /// Draws the Streamable login when it's open (call every frame).
+    /// "Move <clip> to the Recycle Bin?"
+    fn delete_dialog(&mut self, ctx: &egui::Context, shared: &Shared) {
+        let Some(path) = self.confirm_delete.clone() else { return };
+        let c = shared.theme.colors.clone();
+        let online = self.store.uploads.iter().any(|u| u.path == path && !u.expired());
+        let (mut yes, mut no) = (false, false);
+        let resp = egui::Modal::new(egui::Id::unique("delete-clip")).show(ctx, |ui| {
+            ui.set_width(380.0);
+            ui.label(RichText::new("Delete clip?").family(crate::themes::brand_bold_family()).size(shared.theme.fonts.body + 5.0));
+            ui.add_space(6.0);
+            ui.label(format!("Move {} to the Recycle Bin?", Self::file_name(&path)));
+            if online {
+                ui.add_space(4.0);
+                ui.label(RichText::new("Uploaded copies stay online.").color(c.text_dim.0));
+            }
+            ui.add_space(14.0);
+            ui.horizontal(|ui| {
+                let b = egui::Button::new(RichText::new("Move to Recycle Bin").color(Color32::WHITE)).fill(c.error.0).min_size(vec2(0.0, 30.0));
+                if ui.add(b).clicked() {
+                    yes = true;
+                }
+                if ui.add(egui::Button::new("Cancel").min_size(vec2(0.0, 30.0))).clicked() {
+                    no = true;
+                }
+            });
+        });
+        if yes {
+            self.confirm_delete = None;
+            if let Err(e) = self.delete(&path, shared) {
+                log::warn!("{e}");
+                self.toasts.push(e);
+            }
+        } else if no || resp.should_close() {
+            self.confirm_delete = None;
+        }
+    }
+
+    /// Draws the delete dialog and the Streamable login when they're open
+    /// (call every frame).
     pub fn modals(&mut self, ctx: &egui::Context, shared: &Shared) {
+        self.delete_dialog(ctx, shared);
         if !self.login.open {
             return;
         }
@@ -1397,7 +1520,9 @@ fn day_label(t: &LocalTime, today: i64) -> String {
 }
 
 /// A clip's right-click menu (every view).
-fn clip_menu(ui: &mut egui::Ui, path: &Path, favorite: bool, upload: Option<&UploadRecord>, actions: &mut Vec<Action>) {
+/// `can_delete`: the clip is in Snag's clips folder (imported folders'
+/// files aren't deleted from here).
+fn clip_menu(ui: &mut egui::Ui, path: &Path, favorite: bool, upload: Option<&UploadRecord>, can_delete: bool, actions: &mut Vec<Action>) {
     if ui.button("Open in the trimmer").clicked() {
         actions.push(Action::Open(path.to_path_buf()));
         ui.close();
@@ -1428,6 +1553,14 @@ fn clip_menu(ui: &mut egui::Ui, path: &Path, favorite: bool, upload: Option<&Upl
     if ui.button("Upload to Litterbox (temporary link)").clicked() {
         actions.push(Action::Upload(path.to_path_buf(), Some(Host::Litterbox)));
         ui.close();
+    }
+    if can_delete {
+        ui.separator();
+        let red = ui.visuals().error_fg_color;
+        if ui.button(RichText::new("Delete").color(red)).on_hover_text("Move to the Recycle Bin (Delete key)").clicked() {
+            actions.push(Action::Delete(path.to_path_buf()));
+            ui.close();
+        }
     }
 }
 

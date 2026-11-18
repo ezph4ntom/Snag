@@ -54,7 +54,8 @@ pub const ENTRIES: &[Entry] = &[
         tab: "Settings",
         title: "Capture",
         keywords: "capture monitor monitors screen screens display displays focus follow active window second dual multiple \
-                   fixed cursor mouse pointer which screen record area",
+                   fixed cursor mouse pointer which screen record area source sources app apps game only one program \
+                   alt tab specific",
     },
     Entry {
         hit: Hit::Settings(SettingsSection::Folders),

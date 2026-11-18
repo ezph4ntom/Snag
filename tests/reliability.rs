@@ -231,7 +231,7 @@ fn fifty_clips_live_capture() {
     let (t0, p0) = (Instant::now(), pattern.paints.load(std::sync::atomic::Ordering::Relaxed));
     let handle = mon.handle;
     let source: SourceFactory =
-        Box::new(move || Ok(Box::new(WgcSource::new(handle, w, h, false)?) as Box<dyn FrameSource>));
+        Box::new(move || Ok(Box::new(WgcSource::new(snag::buffer::source::Source::Monitor(handle), w, h, false)?) as Box<dyn FrameSource>));
     // Verified after recording: decoding on all cores during recording makes
     // the Windows compositor itself skip frames (measured ~4.5/s), which
     // would test the OS, not our pipeline.

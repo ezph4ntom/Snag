@@ -1,4 +1,4 @@
-//! One Windows Graphics Capture session for one monitor.
+//! One Windows Graphics Capture session for one monitor or one window.
 //!
 //! WGC queues a frame in its pool whenever the screen changes (up to the
 //! refresh rate). Frames are collected two ways, and both just swap the
@@ -23,6 +23,7 @@ use windows::Graphics::Capture::{
 use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
 use windows::Graphics::DirectX::DirectXPixelFormat;
 use windows::Graphics::SizeInt32;
+use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Gdi::HMONITOR;
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
 use windows::core::IInspectable;
@@ -98,8 +99,10 @@ impl Shared {
 }
 
 pub struct WgcCapture {
-    /// HMONITOR (as integer) this session captures.
+    /// HMONITOR (as integer) this session captures; 0 for a window.
     pub monitor: isize,
+    /// HWND (as integer) this session captures; 0 for a monitor.
+    pub window: isize,
     item: GraphicsCaptureItem,
     pool: Direct3D11CaptureFramePool,
     session: GraphicsCaptureSession,
@@ -111,15 +114,26 @@ pub struct WgcCapture {
 impl WgcCapture {
     /// Starts capturing `monitor`. Frames begin arriving asynchronously.
     pub fn start(d3d: &D3D, monitor: isize, capture_cursor: bool) -> Result<Self> {
-        if !GraphicsCaptureSession::IsSupported().unwrap_or(false) {
-            anyhow::bail!("Windows Graphics Capture is not supported on this system (needs Windows 10 1903+)");
-        }
-        // "Interop" interfaces are how Win32 code creates WinRT capture items
-        // from raw HMONITOR/HWND handles.
-        let interop = windows::core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
+        let interop = interop()?;
         // SAFETY: monitor handle came from EnumDisplayMonitors/MonitorFromWindow.
         let item: GraphicsCaptureItem = unsafe { interop.CreateForMonitor(HMONITOR(monitor as *mut _)) }
             .context("CreateForMonitor failed (monitor disconnected?)")?;
+        Self::begin(d3d, item, monitor, 0, capture_cursor)
+    }
+
+    /// Starts capturing one window: only its own pixels, even when other
+    /// windows cover it or it's on another monitor. When it's resized, the
+    /// pool is recreated (see `Shared::accept`) and the converter
+    /// letterboxes it into the fixed output size.
+    pub fn start_for_window(d3d: &D3D, hwnd: isize, capture_cursor: bool) -> Result<Self> {
+        let interop = interop()?;
+        // SAFETY: a window handle from EnumWindows; a stale one just fails.
+        let item: GraphicsCaptureItem = unsafe { interop.CreateForWindow(HWND(hwnd as *mut _)) }
+            .context("CreateForWindow failed (window closed?)")?;
+        Self::begin(d3d, item, 0, hwnd, capture_cursor)
+    }
+
+    fn begin(d3d: &D3D, item: GraphicsCaptureItem, monitor: isize, window: isize, capture_cursor: bool) -> Result<Self> {
         let size = item.Size()?;
 
         // "Free-threaded" pool: no dispatcher queue / message loop needed, and
@@ -151,7 +165,7 @@ impl WgcCapture {
         let sh = shared.clone();
         let closed_token = item.Closed(&TypedEventHandler::<GraphicsCaptureItem, IInspectable>::new(
             move |_, _| {
-                // Fires when the monitor is disconnected.
+                // Fires when the monitor is disconnected or the window closes.
                 sh.closed.store(true, Ordering::Relaxed);
                 Ok(())
             },
@@ -171,10 +185,11 @@ impl WgcCapture {
             log::info!("MinUpdateInterval unsupported (pre-24H2 Windows): capture limited to ~60 fps");
         }
         session.StartCapture()?;
-        log::info!("capture started on monitor {:#x} ({}x{})", monitor, size.Width, size.Height);
+        log::info!("capture started on {} ({}x{})", what(monitor, window), size.Width, size.Height);
 
         Ok(Self {
             monitor,
+            window,
             item,
             pool,
             session,
@@ -191,7 +206,7 @@ impl WgcCapture {
         self.shared.latest.lock().ok().and_then(|mut slot| slot.take())
     }
 
-    /// True once the captured monitor went away.
+    /// True once the captured monitor or window went away.
     pub fn is_closed(&self) -> bool {
         self.shared.closed.load(Ordering::Relaxed)
     }
@@ -207,11 +222,24 @@ impl Drop for WgcCapture {
         let _ = self.session.Close();
         let _ = self.pool.Close();
         log::info!(
-            "capture stopped on monitor {:#x}: {} frames delivered, {} gaps > 16.7 ms, longest gap {:.1} ms",
-            self.monitor,
+            "capture stopped on {}: {} frames delivered, {} gaps > 16.7 ms, longest gap {:.1} ms",
+            what(self.monitor, self.window),
             self.shared.arrived.load(Ordering::Relaxed),
             self.shared.long_gaps.load(Ordering::Relaxed),
             self.shared.max_gap_us.load(Ordering::Relaxed) as f64 / 1000.0
         );
     }
+}
+
+fn interop() -> Result<IGraphicsCaptureItemInterop> {
+    if !GraphicsCaptureSession::IsSupported().unwrap_or(false) {
+        anyhow::bail!("Windows Graphics Capture is not supported on this system (needs Windows 10 1903+)");
+    }
+    // "Interop" interfaces are how Win32 code creates WinRT capture items
+    // from raw HMONITOR/HWND handles.
+    Ok(windows::core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?)
+}
+
+fn what(monitor: isize, window: isize) -> String {
+    if window != 0 { format!("window {window:#x}") } else { format!("monitor {monitor:#x}") }
 }

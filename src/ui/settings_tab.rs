@@ -623,6 +623,12 @@ impl SettingsTab {
                     });
                 });
             });
+            if cap.window_exe.is_empty() {
+                ui.add_enabled(false, egui::RadioButton::new(false, "One app or game (choose it on the Live tab > Sources)"));
+            } else {
+                let label = format!("Only {}: other windows never show up, even after Alt-Tab", cap.window_exe);
+                ui.radio_value(&mut cap.mode, CaptureMode::Window, label).on_hover_text("Choose another app on the Live tab > Sources");
+            }
             ui.checkbox(&mut cap.capture_cursor, "Show the mouse cursor in clips");
         });
         if cap != shared.settings.capture {

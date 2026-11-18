@@ -121,6 +121,7 @@ cargo test --release --test reliability -- --ignored --nocapture   # 50-clip tes
 cargo test --release --test trimmer -- --ignored --nocapture       # trim exactness + preview sound (~10 s)
 cargo test --release --test recording -- --ignored --nocapture     # long recordings: snapshot + stop (~15 s)
 cargo test --release --test audio_capture -- --ignored --nocapture # apps on two devices, mic (plays quiet tones)
+cargo test --release --test window_capture -- --ignored --nocapture # "only this app": covered, minimized, resized, closed, reopened (~20 s)
 ```
 
 * `fifty_clips_synthetic`: records a synthetic 1080p60 source whose every
@@ -224,14 +225,14 @@ ffmpeg details that matter (all measured; see comments in `src/encode/ffmpeg.rs`
 
 | Module | Contents | Milestone |
 |---|---|---|
-| `capture/` | monitors, D3D11 device, WGC session, GPU NV12 converter, screenshots | 1 capture |
+| `capture/` | monitors, D3D11 device, WGC session (monitor or one window), GPU NV12 converter, screenshots, app window list (`window.rs`) | 1 capture |
 | `encode/` | `VideoEncoder` trait, ffmpeg sidecar, encoder detection | 1 capture |
 | `buffer/` | pacer + recorder + audio thread, frame sources, HLS playlist, clip saving | 2 buffer + clips |
 | `audio/` | WASAPI loopback capture, test beep source | audio |
 | `hotkeys/`, `app/` | hotkey parsing/registration, keyboard hook; core process (tray, focus hook, controller, IPC) | 3 hotkeys |
 | `sound.rs` | clip sound via `PlaySound` (no audio thread while idle) | 3 hotkeys |
 | `trimmer/`, `ui/trimmer_tab.rs` | probe, preview decoder, fast/precise export; trimmer UI | 4 trimmer |
-| `library.rs`, `ui/library_tab.rs` | clip library (favorites, collections, upload records in `library.json`), cards, thumbnails, Uploads list, Streamable login | library |
+| `library.rs`, `ui/library_tab.rs` | clip library (favorites, collections, upload records in `library.json`), cards, thumbnails, delete to the Recycle Bin, Uploads list, Streamable login | library |
 | `update.rs`, `ui/about.rs` | GitHub release check, installer download + SHA-256 check, silent install; Settings → About (version, build commit from `build.rs`, links) | updates |
 | `upload/` | Streamable web-flow uploader, Litterbox, multipart HTTP over Windows TLS, Credential Manager | uploads |
 | `ui/search.rs` | the settings search (keywords and synonyms per section) | settings |

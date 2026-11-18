@@ -84,6 +84,9 @@ pub struct Session {
     pub stats: Stats,
     /// HMONITOR currently captured (0 for synthetic sources).
     pub monitor: AtomicIsize,
+    /// Capturing one app that isn't on screen right now (closed or
+    /// minimized): the clip shows black.
+    pub waiting: AtomicBool,
     /// Whether this session records an audio track.
     pub audio: bool,
     start: OnceLock<Instant>,
@@ -127,6 +130,7 @@ impl Session {
 
 enum Command {
     SwitchMonitor(isize),
+    SetSource(source::Source),
     Screenshot(Sender<Result<BgraImage>>),
     Stop,
 }
@@ -162,6 +166,7 @@ impl Recorder {
             encoder: cfg.encoder,
             stats: Stats::default(),
             monitor: AtomicIsize::new(0),
+            waiting: AtomicBool::new(false),
             audio: audio.is_some(),
             start: OnceLock::new(),
             start_qpc: OnceLock::new(),
@@ -185,6 +190,11 @@ impl Recorder {
 
     pub fn switch_monitor(&self, monitor: isize) {
         let _ = self.cmd_tx.send(Command::SwitchMonitor(monitor));
+    }
+
+    /// Captures a monitor or one app from now on (no restart).
+    pub fn set_source(&self, source: source::Source) {
+        let _ = self.cmd_tx.send(Command::SetSource(source));
     }
 
     /// Native-resolution copy of the latest captured frame.
@@ -409,6 +419,10 @@ fn pacer_main(
                     Ok(()) => session.monitor.store(source.current_monitor(), Ordering::Relaxed),
                     Err(e) => log::warn!("monitor switch failed: {e:#}"),
                 },
+                Command::SetSource(s) => match source.set_source(s) {
+                    Ok(()) => session.monitor.store(source.current_monitor(), Ordering::Relaxed),
+                    Err(e) => log::warn!("changing what is captured failed: {e:#}"),
+                },
                 Command::Screenshot(reply) => {
                     let _ = reply.send(source.screenshot());
                 }
@@ -443,6 +457,11 @@ fn pacer_main(
             Ok(p) => p,
             Err(e) => break 'run Err(e),
         };
+        session.waiting.store(source.waiting(), Ordering::Relaxed);
+        if tick.is_multiple_of(cfg.fps as u64) {
+            // The captured app's window may have moved to another monitor.
+            session.monitor.store(source.current_monitor(), Ordering::Relaxed);
+        }
         match produced {
             Produced::New => {
                 pool.free.push(buf.clone());

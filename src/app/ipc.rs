@@ -49,6 +49,10 @@ pub struct CoreStatus {
     pub rec_session_mode: bool,
     /// A recording is being written to the clips folder.
     pub rec_saving: bool,
+    /// Capturing only this app (`game.exe`), not a monitor.
+    pub capturing_app: Option<String>,
+    /// That app isn't on screen (closed or minimized): clips show black.
+    pub app_waiting: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
