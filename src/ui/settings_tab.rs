@@ -53,8 +53,17 @@ pub struct SettingsTab {
     /// "Start with Windows" as read from the registry (read once).
     startup: Option<bool>,
     startup_error: Option<String>,
+    /// The category highlighted in the nav (follows the scroll position).
     category: Option<Category>,
+    /// A category to scroll to on the next frame (nav click, `show_category`).
+    jump: Option<Category>,
+    /// Until this time the highlight stays on the category being jumped to,
+    /// so it doesn't flick through the ones the scroll passes.
+    jump_until: f64,
 }
+
+/// How far below the top of the view a heading still counts as "current".
+const SPY_MARGIN: f32 = 40.0;
 
 /// The sections of the Settings tab, in order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -132,6 +141,7 @@ impl Category {
 fn nav_item(ui: &mut egui::Ui, theme: &crate::themes::Theme, label: &str, selected: bool) -> egui::Response {
     let c = &theme.colors;
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 36.0), egui::Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, label));
     let (bg, fg) = if selected {
         (c.accent.0, c.accent_text.0)
     } else if resp.hovered() {
@@ -161,14 +171,18 @@ fn key_name(key: egui::Key) -> &'static str {
 }
 
 impl SettingsTab {
+    /// Scrolls the settings page to `c` (and highlights it).
     pub fn show_category(&mut self, c: Category) {
         self.category = Some(c);
+        self.jump = Some(c);
     }
 
-    /// Categories on the left, the chosen one's sections on the right.
-    /// `other` draws the sections that live elsewhere (Uploads, Theme).
+    /// Every category on one scrolling page; the nav on the left jumps to
+    /// them and highlights the one in view. `other` draws the sections that
+    /// live elsewhere (Uploads, Theme, About).
     pub fn ui(&mut self, ui: &mut egui::Ui, shared: &mut Shared, other: &mut dyn FnMut(SettingsSection, &mut egui::Ui, &mut Shared)) {
         self.poll(ui, shared);
+        let now = ui.input(|i| i.time);
         let current = *self.category.get_or_insert(Category::General);
         let theme = shared.theme.clone();
         egui::Panel::left("settings-nav")
@@ -180,7 +194,7 @@ impl SettingsTab {
                 ui.spacing_mut().item_spacing.y = 4.0;
                 for c in Category::ALL {
                     if nav_item(ui, &theme, c.label(), c == current).clicked() {
-                        self.category = Some(c);
+                        self.show_category(c);
                     }
                 }
                 // The version, always in view at the bottom.
@@ -190,21 +204,63 @@ impl SettingsTab {
                         .sense(egui::Sense::click());
                     let r = ui.add(v).on_hover_text(format!("Build {} \u{b7} {}\nClick for About", super::about::BUILD_COMMIT, super::about::BUILD_DATE));
                     if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                        self.category = Some(Category::About);
+                        self.show_category(Category::About);
                     }
                 });
             });
+        let jump = self.jump.take();
+        if jump.is_some() {
+            // Long enough for egui's scroll animation (at most ~0.3 s).
+            self.jump_until = now + 0.45;
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
+        }
+        let mut in_view = None;
         egui::CentralPanel::no_frame().show(ui, |ui| {
-            egui::ScrollArea::vertical().id_salt(current).auto_shrink([false, false]).show(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt("settings-page").auto_shrink([false, false]).show(ui, |ui| {
                 ui.set_max_width(760.0);
-                for &which in current.sections() {
-                    match which {
-                        SettingsSection::Uploads | SettingsSection::Theme | SettingsSection::About => other(which, ui, shared),
-                        _ => self.section_ui(which, ui, shared),
+                let view = ui.clip_rect();
+                let mut last_top = 0.0;
+                for (i, c) in Category::ALL.into_iter().enumerate() {
+                    if i > 0 {
+                        ui.add_space(18.0);
                     }
+                    last_top = ui.cursor().top();
+                    let heading = ui.add(egui::Label::new(
+                        RichText::new(c.label().to_uppercase())
+                            .family(crate::themes::brand_bold_family())
+                            .size(theme.fonts.body - 1.0)
+                            .color(theme.colors.text_dim.0),
+                    ));
+                    ui.add_space(4.0);
+                    if jump == Some(c) {
+                        heading.scroll_to_me(Some(egui::Align::TOP));
+                    }
+                    if heading.rect.top() <= view.top() + SPY_MARGIN || in_view.is_none() {
+                        in_view = Some(c);
+                    }
+                    for &which in c.sections() {
+                        match which {
+                            SettingsSection::Uploads | SettingsSection::Theme | SettingsSection::About => other(which, ui, shared),
+                            _ => self.section_ui(which, ui, shared),
+                        }
+                    }
+                }
+                // Room under the last category so it can scroll to the top.
+                let last_height = ui.cursor().top() - last_top;
+                ui.add_space((view.height() - last_height).max(0.0));
+                if ui.cursor().top() <= view.bottom() + 1.0 {
+                    in_view = Category::ALL.last().copied();
                 }
             });
         });
+        if now >= self.jump_until
+            && let Some(c) = in_view
+            && Some(c) != self.category
+        {
+            self.category = Some(c);
+            // The nav was drawn before the page; redraw it with the new highlight.
+            ui.ctx().request_repaint();
+        }
     }
 
     /// Background work the tab needs each frame (folder pickers, key
