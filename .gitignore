@@ -11,3 +11,9 @@
 .idea/
 Thumbs.db
 desktop.ini
+
+# Local notes for Claude (personal; never published)
+CLAUDE.md
+
+# Logs
+*.log

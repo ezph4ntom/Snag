@@ -137,7 +137,12 @@ fn parse_release(json: &serde_json::Value) -> Result<Release> {
     if parse_version(&version).is_none() {
         bail!("unexpected version tag {tag:?}");
     }
-    let page = json["html_url"].as_str().map(str::to_string).unwrap_or_else(|| format!("https://github.com/{REPO}/releases/latest"));
+    // Opened in the browser, so only this repository's pages are accepted.
+    let page = json["html_url"]
+        .as_str()
+        .filter(|u| u.starts_with(&format!("https://github.com/{REPO}/")))
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("https://github.com/{REPO}/releases/latest"));
     // Only files of this repository's releases are ever downloaded.
     let prefix = format!("https://github.com/{REPO}/releases/download/");
     let installer = json["assets"].as_array().into_iter().flatten().find_map(|a| {
@@ -147,8 +152,9 @@ fn parse_release(json: &serde_json::Value) -> Result<Release> {
         if !(lower.starts_with("snag-setup") && lower.ends_with(".exe") && url.starts_with(&prefix)) {
             return None;
         }
-        let sha256 = a["digest"].as_str().and_then(|d| d.strip_prefix("sha256:")).map(|h| h.to_ascii_lowercase());
-        Some(Asset { name: name.to_string(), url: url.to_string(), size: a["size"].as_u64().unwrap_or(0), sha256 })
+        // No checksum, no in-app install (the button opens the release page).
+        let sha256 = a["digest"].as_str()?.strip_prefix("sha256:")?.to_ascii_lowercase();
+        Some(Asset { name: name.to_string(), url: url.to_string(), size: a["size"].as_u64().unwrap_or(0), sha256: Some(sha256) })
     });
     Ok(Release { version, page, installer })
 }
@@ -188,11 +194,12 @@ pub fn download(asset: &Asset, progress: &Progress) -> Result<PathBuf> {
     if asset.size != 0 && data.len() as u64 != asset.size {
         bail!("the download is incomplete ({} of {} bytes)", data.len(), asset.size);
     }
-    if let Some(want) = &asset.sha256 {
-        let got = sha256_hex(&data)?;
-        if &got != want {
-            bail!("the download doesn't match the release (checksum differs)");
-        }
+    // Never run an installer that can't be checked.
+    let Some(want) = &asset.sha256 else {
+        bail!("GitHub lists no checksum for this installer; download it from the release page instead");
+    };
+    if sha256_hex(&data)? != *want {
+        bail!("the download doesn't match the release (checksum differs)");
     }
     let mut f = std::fs::File::create(&path).with_context(|| format!("writing {}", path.display()))?;
     f.write_all(&data)?;
@@ -420,7 +427,7 @@ impl Updater {
             Some(a) if installed() => a,
             // Portable copy (or no installer in the release): the page.
             _ => {
-                crate::win::shell_open(&release.page);
+                crate::win::open_link(&release.page);
                 return;
             }
         };
@@ -497,6 +504,24 @@ mod tests {
             "assets": [{ "name": "Snag-Setup-9.0.0.exe", "browser_download_url": "https://example.com/Snag-Setup-9.0.0.exe", "size": 1 }]
         });
         assert!(parse_release(&evil).unwrap().installer.is_none());
+
+        // An installer without a checksum is never installed in the app.
+        let unchecked = serde_json::json!({
+            "tag_name": "v0.7.0",
+            "assets": [{ "name": "Snag-Setup-0.7.0.exe", "browser_download_url": "https://github.com/ezph4ntom/Snag/releases/download/v0.7.0/Snag-Setup-0.7.0.exe", "size": 1 }]
+        });
+        assert!(parse_release(&unchecked).unwrap().installer.is_none());
+    }
+
+    #[test]
+    fn release_page_stays_on_github() {
+        let page = |url: &str| parse_release(&serde_json::json!({ "tag_name": "v1.0.0", "html_url": url })).unwrap().page;
+        let ok = "https://github.com/ezph4ntom/Snag/releases/tag/v1.0.0";
+        assert_eq!(page(ok), ok);
+        let fallback = "https://github.com/ezph4ntom/Snag/releases/latest";
+        for bad in ["https://evil.example/Snag", "file:///C:/Windows/System32/calc.exe", "https://github.com/someone/else", "https://github.com/ezph4ntom/SnagX/"] {
+            assert_eq!(page(bad), fallback, "{bad}");
+        }
     }
 
     #[test]

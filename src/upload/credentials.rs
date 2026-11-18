@@ -7,7 +7,8 @@ use windows::Win32::Security::Credentials::{
 };
 use windows::core::{PCWSTR, PWSTR};
 
-const TARGET: &str = "Snag/Streamable";
+// Tests use their own entry, so they never touch a real saved login.
+const TARGET: &str = if cfg!(test) { "Snag/Streamable-test" } else { "Snag/Streamable" };
 
 pub struct Login {
     pub email: String,
@@ -65,9 +66,7 @@ pub fn delete() {
 mod tests {
     #[test]
     fn saves_reads_and_deletes() {
-        if super::load().is_some() {
-            return; // a real login is saved: leave it alone
-        }
+        super::delete(); // leftover from an interrupted run
         super::save("test@example.com", "pä55wörd ✓").unwrap();
         let l = super::load().unwrap();
         assert_eq!((l.email.as_str(), l.password.as_str()), ("test@example.com", "pä55wörd ✓"));

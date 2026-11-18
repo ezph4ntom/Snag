@@ -105,6 +105,11 @@ fn create() -> Option<Mapping> {
 }
 
 fn write(map: &Mapping, w: u32, h: u32, rgba: &[u8]) {
+    // The copy below must stay inside the shared block.
+    if w > MAX_W || h > MAX_H || rgba.len() > SIZE - HEADER || rgba.len() < (w * h * 4) as usize {
+        debug_assert!(false, "preview frame {w}x{h} ({} bytes) doesn't fit", rgba.len());
+        return;
+    }
     let seq = map.seq();
     let s = seq.load(Ordering::Relaxed);
     seq.store(s | 1, Ordering::Release); // odd: writing

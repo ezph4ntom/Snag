@@ -168,6 +168,7 @@ pub fn set_dpi_awareness() {
 /// True if this process runs as administrator (elevated).
 pub fn is_elevated() -> bool {
     use windows::Win32::System::Threading::GetCurrentProcess;
+    // SAFETY: returns a pseudo-handle for this process; nothing to close.
     token_elevated(unsafe { GetCurrentProcess() }).unwrap_or(false)
 }
 
@@ -397,6 +398,33 @@ mod app_name_tests {
     fn reads_the_exe_description() {
         let d = super::file_description(std::path::Path::new(r"C:\Windows\System32\cmd.exe"));
         assert_eq!(d.as_deref(), Some("Windows Command Processor"));
+    }
+}
+
+/// Opens a web link in the browser. Anything that isn't an http(s) link
+/// (saved data could hold `file:` or app links) is refused.
+pub fn open_link(url: &str) {
+    if is_web_link(url) {
+        shell_open(url);
+    } else {
+        log::warn!("not opening a link that isn't http(s)");
+    }
+}
+
+fn is_web_link(url: &str) -> bool {
+    let lower = url.trim().to_ascii_lowercase();
+    (lower.starts_with("https://") || lower.starts_with("http://")) && !url.chars().any(char::is_control)
+}
+
+#[cfg(test)]
+mod link_tests {
+    #[test]
+    fn only_web_links_open() {
+        assert!(super::is_web_link("https://streamable.com/abc"));
+        assert!(super::is_web_link("HTTP://litter.catbox.moe/x.mp4"));
+        for bad in ["file:///C:/Windows/System32/calc.exe", "C:\\clip.mp4", "ms-settings:", "javascript:alert(1)", "https://x.com/\n"] {
+            assert!(!super::is_web_link(bad), "{bad:?}");
+        }
     }
 }
 

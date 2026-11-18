@@ -1079,7 +1079,7 @@ impl LibraryTab {
                     }
                     r.context_menu(|ui| {
                         if ui.button("Open link").clicked() {
-                            crate::win::shell_open(&u.url);
+                            crate::win::open_link(&u.url);
                             ui.close();
                         }
                         if ui.button("Upload again").clicked() {
@@ -1197,7 +1197,7 @@ impl LibraryTab {
                                     forget = Some(idx);
                                 }
                                 if ui.add_enabled(!u.expired(), egui::Button::new("Open")).on_hover_text(&u.url).clicked() {
-                                    crate::win::shell_open(&u.url);
+                                    crate::win::open_link(&u.url);
                                 }
                                 let just = self.copied.as_ref().is_some_and(|(url, t)| *url == u.url && t.elapsed() < Duration::from_millis(1500));
                                 let copy_btn = egui::Button::new(RichText::new(if just { "Copied!" } else { "Copy link" }).color(c.accent_text.0)).fill(c.accent.0);
@@ -1421,7 +1421,7 @@ fn clip_menu(ui: &mut egui::Ui, path: &Path, favorite: bool, upload: Option<&Upl
             ui.close();
         }
         if ui.button("Open link").clicked() {
-            crate::win::shell_open(&u.url);
+            crate::win::open_link(&u.url);
             ui.close();
         }
     }

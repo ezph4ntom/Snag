@@ -13,6 +13,10 @@ use log::{Level, LevelFilter, Log, Metadata, Record};
 
 struct FileLogger {
     file: Mutex<Option<File>>,
+    /// The user's profile folder, written as %USERPROFILE% in log lines:
+    /// logs get attached to public bug reports, and the folder name is
+    /// usually the person's name.
+    home: Option<String>,
     also_stderr: bool,
     level: LevelFilter,
 }
@@ -29,13 +33,12 @@ impl Log for FileLogger {
             return;
         }
         let target = record.target().trim_start_matches("snag::");
-        let line = format!(
-            "{} {:<5} [{}] {}\n",
-            crate::win::log_timestamp(),
-            record.level(),
-            target,
-            record.args()
-        );
+        let message = record.args().to_string();
+        let message = match &self.home {
+            Some(home) => mask_home(&message, home),
+            None => message,
+        };
+        let line = format!("{} {:<5} [{}] {}\n", crate::win::log_timestamp(), record.level(), target, message);
         if self.also_stderr {
             eprint!("{line}");
         }
@@ -52,6 +55,39 @@ impl Log for FileLogger {
                 let _ = f.flush();
             }
         }
+    }
+}
+
+/// `text` with every `home` (any letter case, either slash) replaced by
+/// `%USERPROFILE%`.
+fn mask_home(text: &str, home: &str) -> String {
+    let home = home.trim_end_matches(['\\', '/']);
+    if home.len() < 4 {
+        return text.to_string();
+    }
+    // Compare with one kind of slash; ASCII lowercasing keeps byte offsets.
+    let norm = |s: &str| s.replace('/', "\\").to_ascii_lowercase();
+    let (hay, needle) = (norm(text), norm(home));
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
+    for (i, _) in hay.match_indices(&needle) {
+        out.push_str(&text[last..i]);
+        out.push_str("%USERPROFILE%");
+        last = i + needle.len();
+    }
+    out.push_str(&text[last..]);
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn hides_the_user_folder() {
+        let home = r"C:\Users\Jane Doe";
+        let line = r"saved C:\Users\Jane Doe\Videos\Snag\Clip.mp4 and c:/users/jane doe/AppData/x";
+        assert_eq!(super::mask_home(line, home), r"saved %USERPROFILE%\Videos\Snag\Clip.mp4 and %USERPROFILE%/AppData/x");
+        assert_eq!(super::mask_home("nothing here", home), "nothing here");
+        assert_eq!(super::mask_home(r"Ärger in C:\Users\Jane Doe\ü", home), r"Ärger in %USERPROFILE%\ü");
     }
 }
 
@@ -73,6 +109,7 @@ pub fn init(name: &str) {
     };
     let logger = FileLogger {
         file: Mutex::new(file),
+        home: std::env::var("USERPROFILE").ok(),
         also_stderr: cfg!(debug_assertions) || std::env::var_os("SNAG_LOG_STDERR").is_some(),
         level,
     };
