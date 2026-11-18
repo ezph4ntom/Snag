@@ -71,6 +71,20 @@ pub struct Library {
     pub onboarding_done: bool,
     /// The connected Streamable account's plan (None = not connected).
     pub streamable: Option<Plan>,
+    /// How the Clips tab lays clips out.
+    pub view: ClipView,
+}
+
+/// The Clips tab's layouts.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ClipView {
+    /// Cards with a big thumbnail, upload and trim buttons.
+    #[default]
+    Grid,
+    /// Smaller cards: thumbnail, title and length.
+    Compact,
+    /// One row per clip.
+    List,
 }
 
 pub fn now() -> u64 {

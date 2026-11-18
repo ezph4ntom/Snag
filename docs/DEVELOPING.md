@@ -60,7 +60,9 @@ closed first) and has a normal uninstaller; settings and clips are kept.
 The script is `installer\snag.iss`.
 
 Installed copies update themselves (`src/update.rs`): the window asks the
-GitHub API for the latest release every 6 hours, and the title bar offers
+GitHub API for the latest release when it opens (unless it checked in the
+last 30 minutes) and hourly after that, retrying a failed check after 10
+minutes; the title bar offers
 "Update to X" when it is newer than the build's `Cargo.toml` version. A
 click downloads that release's `Snag-Setup-*.exe`, checks its SHA-256
 against GitHub's digest and runs it with `/SILENT /RELAUNCH=1`, so a release

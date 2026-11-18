@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use super::widgets::{fmt_bytes, fmt_duration};
 use super::{Shared, dim};
-use crate::library::{Host, Library, UploadRecord};
+use crate::library::{ClipView, Host, Library, UploadRecord};
 use crate::upload::{Request, Uploader, View, credentials, litterbox, streamable};
 use crate::win::LocalTime;
 
@@ -25,7 +25,13 @@ use crate::win::LocalTime;
 const MAX_TEXTURES: usize = 64;
 const THUMB_W: u32 = 384;
 const CARD_MIN_W: f32 = 236.0;
+/// Compact view cards: about 60% of a grid card.
+const COMPACT_MIN_W: f32 = 142.0;
+const LIST_ROW_H: f32 = 58.0;
+const LIST_THUMB: egui::Vec2 = vec2(80.0, 45.0);
 const GAP: f32 = 14.0;
+/// A favourite's star.
+const STAR: Color32 = Color32::from_rgb(255, 196, 0);
 const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const DAYS: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
@@ -493,9 +499,17 @@ impl LibraryTab {
                 return;
             }
             let avail = ui.available_width() - 4.0;
-            let cols = (((avail + GAP) / (CARD_MIN_W + GAP)).floor() as usize).max(1);
-            let card_w = ((avail - GAP * (cols - 1) as f32) / cols as f32).floor();
-            let card_h = card_w * 9.0 / 16.0 + 64.0;
+            let view = self.store.view;
+            // Items per row, their size, and the gap between rows.
+            let (cols, item_w, item_h, gap_y) = match view {
+                ClipView::Grid | ClipView::Compact => {
+                    let (min_w, below) = if view == ClipView::Grid { (CARD_MIN_W, 64.0) } else { (COMPACT_MIN_W, 30.0) };
+                    let cols = (((avail + GAP) / (min_w + GAP)).floor() as usize).max(1);
+                    let w = ((avail - GAP * (cols - 1) as f32) / cols as f32).floor();
+                    (cols, w, (w * 9.0 / 16.0).round() + below, GAP)
+                }
+                ClipView::List => (1, avail, LIST_ROW_H, 4.0),
+            };
             let grouped = matches!(self.sort, Sort::Newest | Sort::Oldest);
             let mut start = 0;
             while start < shown.len() {
@@ -514,22 +528,30 @@ impl LibraryTab {
                     ui.add_space(6.0);
                 }
                 for row in shown[start..end].chunks(cols) {
-                    let row_rect = Rect::from_min_size(ui.cursor().min, vec2(avail, card_h));
-                    if !ui.is_rect_visible(row_rect) {
-                        ui.allocate_space(vec2(avail, card_h));
-                        ui.add_space(GAP);
-                        continue;
-                    }
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = GAP;
+                    // Every row takes exactly its height, drawn or not, so
+                    // the scroll length doesn't change while scrolling.
+                    let row_rect = Rect::from_min_size(ui.cursor().min, vec2(avail, item_h));
+                    if ui.is_rect_visible(row_rect) {
+                        let mut row_ui = ui.new_child(
+                            egui::UiBuilder::new()
+                                .id_salt(("clip-row", &self.clips[row[0]].path))
+                                .max_rect(row_rect)
+                                .layout(egui::Layout::left_to_right(egui::Align::Min)),
+                        );
+                        row_ui.spacing_mut().item_spacing.x = GAP;
                         for &i in row {
-                            ui.allocate_ui_with_layout(vec2(card_w, card_h), egui::Layout::top_down(egui::Align::Min), |ui| {
-                                ui.set_width(card_w);
-                                self.card(ui, shared, i, card_w, &mut actions);
+                            row_ui.allocate_ui_with_layout(vec2(item_w, item_h), egui::Layout::top_down(egui::Align::Min), |ui| {
+                                ui.set_width(item_w);
+                                match view {
+                                    ClipView::Grid => self.card(ui, shared, i, item_w, &mut actions),
+                                    ClipView::Compact => self.compact_card(ui, shared, i, item_w, &mut actions),
+                                    ClipView::List => self.list_row(ui, shared, i, item_w, &mut actions),
+                                }
                             });
                         }
-                    });
-                    ui.add_space(GAP);
+                    }
+                    ui.allocate_space(vec2(avail, item_h));
+                    ui.add_space(gap_y);
                 }
                 ui.add_space(6.0);
                 start = end;
@@ -643,6 +665,7 @@ impl LibraryTab {
         };
         let theme = shared.theme.clone();
         let mut remove = None;
+        let mut view = self.store.view;
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
             for (f, name) in [(Filter::All, "All"), (Filter::Today, "Today"), (Filter::Week, "This week"), (Filter::Favorites, "Favorites")] {
@@ -677,6 +700,8 @@ impl LibraryTab {
                 self.picking = Some(super::dialogs::pick_folder(&shared.settings.clips_dir));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                view_switch(ui, &theme, &mut view);
+                ui.add_space(8.0);
                 egui::ComboBox::from_id_salt("library-sort").selected_text(format!("Sort: {}", self.sort.label())).show_ui(ui, |ui| {
                     for s in Sort::ALL {
                         ui.selectable_value(&mut self.sort, s, s.label());
@@ -684,6 +709,10 @@ impl LibraryTab {
                 });
             });
         });
+        if view != self.store.view {
+            self.store.view = view;
+            self.store.save();
+        }
         if let Some(k) = remove {
             self.store.collections.remove(k);
             self.store.save();
@@ -692,21 +721,21 @@ impl LibraryTab {
         }
     }
 
-    fn card(&mut self, ui: &mut egui::Ui, shared: &Shared, i: usize, w: f32, actions: &mut Vec<Action>) {
+    /// A clip's thumbnail with its overlays: play on hover, and (unless
+    /// `small`) the length, "Trimmed" and the favourite star. Click opens
+    /// the trimmer; right-click shows the clip's menu.
+    fn thumbnail(&mut self, ui: &mut egui::Ui, shared: &Shared, i: usize, size: egui::Vec2, small: bool, actions: &mut Vec<Action>) {
         let c = shared.theme.colors.clone();
         let clip = &self.clips[i];
         let path = clip.path.clone();
-        let title = self.title(clip);
         let seconds = self.seconds(clip);
         let favorite = self.store.favorites.contains(&path);
-        let subtitle = format!("{:02}:{:02} · {}", clip.when.hour, clip.when.minute, fmt_bytes(clip.size));
-        let (trimmed, stamp, size) = (clip.trimmed, clip.stamp, clip.size);
+        let (trimmed, ident) = (clip.trimmed, (clip.stamp, clip.size));
+        let radius = if small { 6.0 } else { 10.0 };
 
-        // ---- thumbnail ----
-        let (rect, resp) = ui.allocate_exact_size(vec2(w, (w * 9.0 / 16.0).round()), Sense::click());
+        let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
         let p = ui.painter().clone();
-        p.rect_filled(rect, 10.0, c.preview.0);
-        let ident = (stamp, size);
+        p.rect_filled(rect, radius, c.preview.0);
         if self.thumb_ident.get(&path).is_some_and(|i| *i != ident) {
             self.thumbs.remove(&path); // the file changed (e.g. trimmed in place)
         }
@@ -714,7 +743,7 @@ impl LibraryTab {
             Some(Slot::Ready(tex, used)) => {
                 *used = self.frame;
                 p.add(
-                    egui::epaint::RectShape::filled(rect, 10.0, Color32::WHITE)
+                    egui::epaint::RectShape::filled(rect, radius, Color32::WHITE)
                         .with_texture(tex.id(), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0))),
                 );
             }
@@ -728,79 +757,67 @@ impl LibraryTab {
         }
         let hovered = resp.hovered();
         if hovered {
-            p.rect_stroke(rect, 10.0, Stroke::new(2.0, c.accent.0), egui::StrokeKind::Inside);
-            p.circle_filled(rect.center(), 22.0, Color32::from_black_alpha(140));
+            let (r, k) = if small { (12.0, 0.55) } else { (22.0, 1.0) };
+            p.rect_stroke(rect, radius, Stroke::new(2.0, c.accent.0), egui::StrokeKind::Inside);
+            p.circle_filled(rect.center(), r, Color32::from_black_alpha(140));
             let ctr = rect.center();
             p.add(Shape::convex_polygon(
-                vec![ctr + vec2(-6.0, -9.0), ctr + vec2(10.0, 0.0), ctr + vec2(-6.0, 9.0)],
+                vec![ctr + vec2(-6.0, -9.0) * k, ctr + vec2(10.0, 0.0) * k, ctr + vec2(-6.0, 9.0) * k],
                 Color32::WHITE,
                 Stroke::NONE,
             ));
         }
-        if let Some(s) = seconds {
-            let badge = p.layout_no_wrap(fmt_duration(s), egui::FontId::proportional(11.5), Color32::WHITE);
-            let b = Rect::from_min_size(rect.max - badge.size() - vec2(16.0, 12.0), badge.size() + vec2(10.0, 4.0));
-            p.rect_filled(b, 5.0, Color32::from_black_alpha(185));
-            p.galley(b.min + vec2(5.0, 2.0), badge, Color32::WHITE);
+        let mut star_clicked = false;
+        if !small {
+            if let Some(s) = seconds {
+                let badge = p.layout_no_wrap(fmt_duration(s), egui::FontId::proportional(11.5), Color32::WHITE);
+                let b = Rect::from_min_size(rect.max - badge.size() - vec2(16.0, 12.0), badge.size() + vec2(10.0, 4.0));
+                p.rect_filled(b, 5.0, Color32::from_black_alpha(185));
+                p.galley(b.min + vec2(5.0, 2.0), badge, Color32::WHITE);
+            }
+            if trimmed {
+                let tag = p.layout_no_wrap("Trimmed".into(), egui::FontId::proportional(10.5), Color32::WHITE);
+                let b = Rect::from_min_size(pos2(rect.right() - tag.size().x - 18.0, rect.top() + 10.0), tag.size() + vec2(10.0, 4.0));
+                p.rect_filled(b, 5.0, Color32::from_black_alpha(160));
+                p.galley(b.min + vec2(5.0, 2.0), tag, Color32::WHITE);
+            }
+            // Favourite star (top left).
+            let star_c = pos2(rect.left() + 20.0, rect.top() + 20.0);
+            let star_rect = Rect::from_center_size(star_c, vec2(28.0, 28.0));
+            let star = ui.interact(star_rect, ui.scope_id().with(("star", &path)), Sense::click());
+            if favorite || hovered || star.hovered() {
+                p.circle_filled(star_c, 14.0, Color32::from_black_alpha(if star.hovered() { 170 } else { 120 }));
+                paint_star(&p, star_c, 8.0, if favorite { Some(STAR) } else { None }, Color32::WHITE);
+            }
+            star_clicked = star.on_hover_text(if favorite { "Remove from favorites" } else { "Add to favorites" }).clicked();
+            if star_clicked {
+                actions.push(Action::Favorite(path.clone()));
+            }
         }
-        if trimmed {
-            let tag = p.layout_no_wrap("Trimmed".into(), egui::FontId::proportional(10.5), Color32::WHITE);
-            let b = Rect::from_min_size(pos2(rect.right() - tag.size().x - 18.0, rect.top() + 10.0), tag.size() + vec2(10.0, 4.0));
-            p.rect_filled(b, 5.0, Color32::from_black_alpha(160));
-            p.galley(b.min + vec2(5.0, 2.0), tag, Color32::WHITE);
-        }
-        // Favourite star (top left).
-        let star_c = pos2(rect.left() + 20.0, rect.top() + 20.0);
-        let star_rect = Rect::from_center_size(star_c, vec2(28.0, 28.0));
-        let star = ui.interact(star_rect, ui.scope_id().with(("star", &path)), Sense::click());
-        if favorite || hovered || star.hovered() {
-            p.circle_filled(star_c, 14.0, Color32::from_black_alpha(if star.hovered() { 170 } else { 120 }));
-            paint_star(&p, star_c, 8.0, if favorite { Some(Color32::from_rgb(255, 196, 0)) } else { None });
-        }
-        if star.on_hover_text(if favorite { "Remove from favorites" } else { "Add to favorites" }).clicked() {
-            actions.push(Action::Favorite(path.clone()));
-        } else if resp.clicked() {
+        if resp.clicked() && !star_clicked {
             actions.push(Action::Open(path.clone()));
         }
         let upload = self.store.upload_of(&path).cloned();
-        resp.on_hover_text("Open in the trimmer").on_hover_cursor(egui::CursorIcon::PointingHand).context_menu(|ui| {
-            if ui.button("Open in the trimmer").clicked() {
-                actions.push(Action::Open(path.clone()));
-                ui.close();
-            }
-            if ui.button("Play").clicked() {
-                actions.push(Action::Play(path.clone()));
-                ui.close();
-            }
-            if ui.button("Show in folder").clicked() {
-                actions.push(Action::Reveal(path.clone()));
-                ui.close();
-            }
-            if ui.button(if favorite { "Remove from favorites" } else { "Add to favorites" }).clicked() {
-                actions.push(Action::Favorite(path.clone()));
-                ui.close();
-            }
-            ui.separator();
-            if let Some(u) = &upload {
-                if ui.button("Copy link").clicked() {
-                    actions.push(Action::Copy(u.url.clone()));
-                    ui.close();
-                }
-                if ui.button("Open link").clicked() {
-                    crate::win::shell_open(&u.url);
-                    ui.close();
-                }
-            }
-            if ui.button("Upload to Litterbox (temporary link)").clicked() {
-                actions.push(Action::Upload(path.clone(), Some(Host::Litterbox)));
-                ui.close();
-            }
-        });
+        resp.on_hover_text("Open in the trimmer")
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .context_menu(|ui| clip_menu(ui, &path, favorite, upload.as_ref(), actions));
+    }
 
-        // ---- title + row: subtitle | Upload | Trim ----
+    /// Grid view: a big thumbnail, the title, then time/size | Upload | Trim.
+    fn card(&mut self, ui: &mut egui::Ui, shared: &Shared, i: usize, w: f32, actions: &mut Vec<Action>) {
+        let c = shared.theme.colors.clone();
+        let clip = &self.clips[i];
+        let path = clip.path.clone();
+        let title = self.title(clip);
+        let seconds = self.seconds(clip);
+        let subtitle = format!("{:02}:{:02} · {}", clip.when.hour, clip.when.minute, fmt_bytes(clip.size));
+        let size = clip.size;
+        self.thumbnail(ui, shared, i, vec2(w, (w * 9.0 / 16.0).round()), false, actions);
+
         ui.add_space(6.0);
         self.title_row(ui, shared, &path, &title, w, actions);
         let (row, _) = ui.allocate_exact_size(vec2(w, 24.0), Sense::hover());
+        let p = ui.painter().clone();
         let sub = p.layout_no_wrap(subtitle, egui::FontId::proportional(12.0), c.text_dim.0);
         let sub_right = row.left() + sub.size().x;
         p.galley(pos2(row.left(), row.center().y - sub.size().y / 2.0), sub, c.text_dim.0);
@@ -813,7 +830,85 @@ impl LibraryTab {
         let (free_l, free_r) = (sub_right + 8.0, trim_rect.left() - 8.0);
         let x = if free_r - free_l >= 86.0 { (free_l + free_r) / 2.0 } else { row.center().x };
         let btn_rect = Rect::from_center_size(pos2(x, row.center().y), vec2(86.0, 22.0));
+        let upload = self.store.upload_of(&path).cloned();
         self.upload_widget(ui, shared, btn_rect, &path, size, seconds, upload.as_ref(), actions);
+    }
+
+    /// Compact view: a small thumbnail (with the length) and the title.
+    fn compact_card(&mut self, ui: &mut egui::Ui, shared: &Shared, i: usize, w: f32, actions: &mut Vec<Action>) {
+        let path = self.clips[i].path.clone();
+        let title = self.title(&self.clips[i]);
+        self.thumbnail(ui, shared, i, vec2(w, (w * 9.0 / 16.0).round()), false, actions);
+        ui.add_space(4.0);
+        self.title_row(ui, shared, &path, &title, w, actions);
+    }
+
+    /// List view: thumbnail | title over date, time and size | star |
+    /// length | Upload | Trim.
+    fn list_row(&mut self, ui: &mut egui::Ui, shared: &Shared, i: usize, w: f32, actions: &mut Vec<Action>) {
+        let c = shared.theme.colors.clone();
+        let clip = &self.clips[i];
+        let path = clip.path.clone();
+        let title = self.title(clip);
+        let seconds = self.seconds(clip);
+        let favorite = self.store.favorites.contains(&path);
+        let when = format!(
+            "{} {} {:02}:{:02} · {}",
+            clip.when.day,
+            MONTHS[(clip.when.month - 1) as usize],
+            clip.when.hour,
+            clip.when.minute,
+            fmt_bytes(clip.size)
+        );
+        let size = clip.size;
+        let upload = self.store.upload_of(&path).cloned();
+
+        let row = Rect::from_min_size(ui.cursor().min, vec2(w, LIST_ROW_H));
+        if ui.rect_contains_pointer(row) {
+            ui.painter().rect_filled(row, 8.0, c.widget_hover.0.gamma_multiply(0.6));
+        }
+        // Right-hand side, from the right edge: Trim, Upload, length, star.
+        let right = 34.0 + 10.0 + 86.0 + 12.0 + 52.0 + 6.0 + 26.0 + 10.0;
+        let text_w = (w - 8.0 - LIST_THUMB.x - 12.0 - right).max(60.0);
+        ui.allocate_ui_with_layout(vec2(w, LIST_ROW_H), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            ui.add_space(8.0);
+            self.thumbnail(ui, shared, i, LIST_THUMB, true, actions);
+            ui.add_space(12.0);
+            ui.allocate_ui_with_layout(vec2(text_w, LIST_ROW_H), egui::Layout::top_down(egui::Align::Min), |ui| {
+                ui.set_width(text_w);
+                ui.add_space(9.0);
+                self.title_row(ui, shared, &path, &title, text_w, actions);
+                ui.label(RichText::new(when).size(12.0).color(c.text_dim.0));
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                ui.add_space(10.0);
+                let trim = ui.add_sized(vec2(34.0, 22.0), egui::Link::new(RichText::new("Trim").color(c.accent.0)));
+                if trim.on_hover_text("Open in the trimmer").clicked() {
+                    actions.push(Action::Open(path.clone()));
+                }
+                ui.add_space(10.0);
+                let (btn, _) = ui.allocate_exact_size(vec2(86.0, 22.0), Sense::hover());
+                self.upload_widget(ui, shared, btn, &path, size, seconds, upload.as_ref(), actions);
+                ui.add_space(12.0);
+                let (len, _) = ui.allocate_exact_size(vec2(52.0, 22.0), Sense::hover());
+                if let Some(s) = seconds {
+                    ui.painter().text(len.right_center(), egui::Align2::RIGHT_CENTER, fmt_duration(s), egui::FontId::proportional(12.5), c.text.0);
+                }
+                ui.add_space(6.0);
+                let (star_rect, star) = ui.allocate_exact_size(vec2(26.0, 26.0), Sense::click());
+                let col = if favorite { STAR } else if star.hovered() { c.text.0 } else { c.text_dim.0 };
+                paint_star(ui.painter(), star_rect.center(), 7.5, favorite.then_some(STAR), col);
+                if star
+                    .on_hover_text(if favorite { "Remove from favorites" } else { "Add to favorites" })
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .clicked()
+                {
+                    actions.push(Action::Favorite(path.clone()));
+                }
+            });
+        });
     }
 
     /// The card's title: the game (or "Clip 19:23"); click to show the file
@@ -1301,6 +1396,88 @@ fn day_label(t: &LocalTime, today: i64) -> String {
     }
 }
 
+/// A clip's right-click menu (every view).
+fn clip_menu(ui: &mut egui::Ui, path: &Path, favorite: bool, upload: Option<&UploadRecord>, actions: &mut Vec<Action>) {
+    if ui.button("Open in the trimmer").clicked() {
+        actions.push(Action::Open(path.to_path_buf()));
+        ui.close();
+    }
+    if ui.button("Play").clicked() {
+        actions.push(Action::Play(path.to_path_buf()));
+        ui.close();
+    }
+    if ui.button("Show in folder").clicked() {
+        actions.push(Action::Reveal(path.to_path_buf()));
+        ui.close();
+    }
+    if ui.button(if favorite { "Remove from favorites" } else { "Add to favorites" }).clicked() {
+        actions.push(Action::Favorite(path.to_path_buf()));
+        ui.close();
+    }
+    ui.separator();
+    if let Some(u) = upload {
+        if ui.button("Copy link").clicked() {
+            actions.push(Action::Copy(u.url.clone()));
+            ui.close();
+        }
+        if ui.button("Open link").clicked() {
+            crate::win::shell_open(&u.url);
+            ui.close();
+        }
+    }
+    if ui.button("Upload to Litterbox (temporary link)").clicked() {
+        actions.push(Action::Upload(path.to_path_buf(), Some(Host::Litterbox)));
+        ui.close();
+    }
+}
+
+/// Grid | Compact | List, as three icon buttons.
+fn view_switch(ui: &mut egui::Ui, theme: &crate::themes::Theme, view: &mut ClipView) {
+    let c = &theme.colors;
+    // Right to left: List is drawn first so the order reads Grid, Compact, List.
+    for (v, tip) in [(ClipView::List, "List"), (ClipView::Compact, "Compact grid"), (ClipView::Grid, "Grid")] {
+        let (rect, resp) = ui.allocate_exact_size(vec2(30.0, 28.0), Sense::click());
+        resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, *view == v, tip));
+        let selected = *view == v;
+        let bg = if selected {
+            c.accent.0
+        } else if resp.hovered() {
+            c.widget_active.0
+        } else {
+            c.widget_hover.0
+        };
+        let fg = if selected { c.accent_text.0 } else { c.text.0 };
+        let p = ui.painter();
+        p.rect_filled(rect, 8.0, bg);
+        let ctr = rect.center();
+        match v {
+            ClipView::Grid => {
+                for (dx, dy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+                    p.rect_filled(Rect::from_center_size(ctr + vec2(dx, dy) * 3.6, vec2(6.0, 6.0)), 1.5, fg);
+                }
+            }
+            ClipView::Compact => {
+                for dx in [-1.0, 0.0, 1.0] {
+                    for dy in [-1.0, 0.0, 1.0] {
+                        p.rect_filled(Rect::from_center_size(ctr + vec2(dx, dy) * 4.6, vec2(3.4, 3.4)), 0.8, fg);
+                    }
+                }
+            }
+            ClipView::List => {
+                for dy in [-1.0, 0.0, 1.0] {
+                    let y = ctr.y + dy * 4.6;
+                    p.circle_filled(pos2(ctr.x - 6.0, y), 1.3, fg);
+                    p.line_segment([pos2(ctr.x - 3.0, y), pos2(ctr.x + 7.5, y)], Stroke::new(1.6, fg));
+                }
+            }
+        }
+        if resp.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            *view = v;
+        }
+        ui.add_space(2.0);
+    }
+}
+
 /// One side of the Clips | Uploads switch. The selected one is in the
 /// accent color; the count shows while hovered.
 fn segment(ui: &mut egui::Ui, theme: &crate::themes::Theme, name: &str, count: usize, selected: bool) -> Response {
@@ -1363,8 +1540,8 @@ fn pill(ui: &mut egui::Ui, theme: &crate::themes::Theme, name: &str, count: usiz
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-/// A five-point star; filled with `fill`, or a white outline.
-fn paint_star(p: &egui::Painter, c: Pos2, r: f32, fill: Option<Color32>) {
+/// A five-point star; filled with `fill`, or an outline.
+fn paint_star(p: &egui::Painter, c: Pos2, r: f32, fill: Option<Color32>, outline: Color32) {
     let pt = |i: usize, rad: f32| {
         let a = -std::f32::consts::FRAC_PI_2 + i as f32 * std::f32::consts::PI / 5.0;
         c + vec2(a.cos(), a.sin()) * rad
@@ -1381,7 +1558,7 @@ fn paint_star(p: &egui::Painter, c: Pos2, r: f32, fill: Option<Color32>) {
             }
         }
         None => {
-            p.add(Shape::closed_line(pts, Stroke::new(1.4, Color32::WHITE)));
+            p.add(Shape::closed_line(pts, Stroke::new(1.4, outline)));
         }
     }
 }

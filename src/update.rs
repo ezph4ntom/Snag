@@ -30,8 +30,25 @@ pub fn source_url() -> String {
 pub fn release_notes_url() -> String {
     format!("https://github.com/{REPO}/releases/tag/v{}", current())
 }
-/// How often GitHub is asked (it allows 60 requests an hour per address).
-const CHECK_EVERY: Duration = Duration::from_secs(6 * 3600);
+/// How often GitHub is asked while the window is open (it allows 60
+/// requests an hour per address).
+const CHECK_EVERY: Duration = Duration::from_secs(3600);
+/// A check younger than this is reused when the window opens; anything
+/// older is redone right away, so a new release shows up promptly.
+const REUSE_FOR: Duration = Duration::from_secs(30 * 60);
+/// A failed check (offline, GitHub down) is tried again after this.
+const RETRY_AFTER: Duration = Duration::from_secs(10 * 60);
+
+/// How long after the window opens to ask GitHub, given the age of the
+/// last check saved in update.json.
+fn first_check_in(age: Duration) -> Duration {
+    REUSE_FOR.saturating_sub(age)
+}
+
+/// How long after a check finished to ask again.
+fn next_check_in(ok: bool) -> Duration {
+    if ok { CHECK_EVERY } else { RETRY_AFTER }
+}
 /// The installer is a few MB; anything far bigger is not ours.
 const MAX_INSTALLER_BYTES: u64 = 200 << 20;
 
@@ -267,7 +284,7 @@ impl Updater {
     pub fn new(pretend: Option<String>) -> Self {
         let cache: Cache = std::fs::read(cache_file()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         let age = Duration::from_secs(crate::library::now().saturating_sub(cache.checked_at));
-        let next_check = if pretend.is_some() || age >= CHECK_EVERY { Instant::now() } else { Instant::now() + (CHECK_EVERY - age) };
+        let next_check = Instant::now() + first_check_in(age);
         Self {
             latest: cache.release,
             busy: None,
@@ -314,6 +331,7 @@ impl Updater {
                     self.busy = None;
                     self.checking = false;
                     self.checked = Some(r.as_ref().map(|_| ()).map_err(Clone::clone));
+                    self.next_check = Instant::now() + next_check_in(r.is_ok());
                     match r {
                         Ok(release) => {
                             let cache = Cache { checked_at: crate::library::now(), release: Some(release.clone()) };
@@ -359,6 +377,7 @@ impl Updater {
     }
 
     fn spawn_check(&mut self) {
+        // Set properly when the answer arrives (poll).
         self.next_check = Instant::now() + CHECK_EVERY;
         self.checking = true;
         let (tx, rx) = mpsc::channel();
@@ -431,6 +450,12 @@ impl Updater {
     pub fn busy(&self) -> bool {
         self.downloading || self.installing
     }
+
+    /// Time until the next automatic check, so an idle window can ask to be
+    /// woken for it. None while a check or the update itself is running.
+    pub fn next_check_in(&self) -> Option<Duration> {
+        (self.busy.is_none() && !self.installing).then(|| self.next_check.saturating_duration_since(Instant::now()))
+    }
 }
 
 #[cfg(test)]
@@ -472,6 +497,20 @@ mod tests {
             "assets": [{ "name": "Snag-Setup-9.0.0.exe", "browser_download_url": "https://example.com/Snag-Setup-9.0.0.exe", "size": 1 }]
         });
         assert!(parse_release(&evil).unwrap().installer.is_none());
+    }
+
+    #[test]
+    fn check_timing() {
+        let min = |m: u64| Duration::from_secs(m * 60);
+        // Window opened shortly after a check: reuse it, but not for long.
+        assert_eq!(first_check_in(min(10)), min(20));
+        // An older check (or none: age is "since 1970"): ask right away.
+        assert_eq!(first_check_in(min(30)), Duration::ZERO);
+        assert_eq!(first_check_in(min(5 * 60)), Duration::ZERO);
+        assert_eq!(first_check_in(Duration::from_secs(crate::library::now())), Duration::ZERO);
+        // Then hourly; a failed check is retried sooner.
+        assert_eq!(next_check_in(true), min(60));
+        assert_eq!(next_check_in(false), min(10));
     }
 
     #[test]

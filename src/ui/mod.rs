@@ -649,7 +649,6 @@ impl App {
     fn search_results(&mut self, ui: &mut egui::Ui) {
         let query = self.search.trim().to_string();
         let hits = search::search(&query);
-        let mut show_hotkeys = false;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.set_max_width(900.0);
             ui.horizontal(|ui| {
@@ -673,11 +672,7 @@ impl App {
                 ui.add_space(2.0);
                 match h.hit {
                     search::Hit::Settings(settings_tab::SettingsSection::Uploads) => self.library.settings_section(ui, &mut self.shared),
-                    search::Hit::Settings(settings_tab::SettingsSection::About) => {
-                        if self.about.section(ui, &self.shared, &mut self.updater) {
-                            show_hotkeys = true;
-                        }
-                    }
+                    search::Hit::Settings(settings_tab::SettingsSection::About) => self.about.section(ui, &self.shared, &mut self.updater),
                     search::Hit::Settings(s) => self.settings_tab.section_ui(s, ui, &mut self.shared),
                     search::Hit::SoundRecording => self.sound.recording_section(ui, &mut self.shared),
                     search::Hit::SoundSources => self.sound.sources_section(ui, &mut self.shared),
@@ -688,11 +683,6 @@ impl App {
                 }
             }
         });
-        if show_hotkeys {
-            self.search.clear();
-            self.tab = Tab::Settings;
-            self.settings_tab.show_category(settings_tab::Category::Hotkeys);
-        }
     }
 
     fn close_dialog(&mut self, ctx: &egui::Context) {
@@ -844,8 +834,13 @@ impl eframe::App for App {
         self.trimmer.poll_background(&self.shared.settings);
         self.library.poll_background(ctx);
         self.updater.poll(self.shared.settings.ui.check_updates);
-        if self.updater.busy() {
-            ctx.request_repaint_after(Duration::from_millis(200));
+        match self.updater.next_check_in() {
+            // A check or the download is running: look for its answer (an
+            // idle window wouldn't redraw on its own).
+            None => ctx.request_repaint_after(Duration::from_millis(200)),
+            // Wake an idle window for the next automatic check.
+            Some(wait) if self.shared.settings.ui.check_updates => ctx.request_repaint_after(wait + Duration::from_millis(50)),
+            Some(_) => {}
         }
         if let Some(t) = self.library.toasts.pop() {
             self.toast = Some((t, Instant::now()));
@@ -995,16 +990,12 @@ impl eframe::App for App {
                     let about = &mut self.about;
                     let updater = &mut self.updater;
                     let theme_error = self.theme_error.as_deref();
-                    let mut show_hotkeys = false;
                     self.settings_tab.ui(ui, &mut self.shared, &mut |which, ui, shared| match which {
                         settings_tab::SettingsSection::Uploads => library.settings_section(ui, shared),
                         settings_tab::SettingsSection::Theme => appearance.theme_section(ui, shared, theme_error),
-                        settings_tab::SettingsSection::About => show_hotkeys |= about.section(ui, shared, updater),
+                        settings_tab::SettingsSection::About => about.section(ui, shared, updater),
                         _ => {}
                     });
-                    if show_hotkeys {
-                        self.settings_tab.show_category(settings_tab::Category::Hotkeys);
-                    }
                 }
                 Tab::Quality => self.quality.ui(ui, &mut self.shared),
                 }

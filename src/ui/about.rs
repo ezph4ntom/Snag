@@ -1,7 +1,7 @@
 //! Settings > About: the version and build, and links (check for updates,
-//! release notes, keyboard shortcuts, source code, log files).
+//! release notes, source code, log files).
 
-use eframe::egui::{self, Color32, CornerRadius, Rect, RichText, Sense, Stroke, Vec2, pos2, vec2};
+use eframe::egui::{self, Color32, CornerRadius, RichText, Sense, Stroke, Vec2, pos2, vec2};
 
 use super::Shared;
 use crate::update::{CheckStatus, Phase, Updater};
@@ -20,14 +20,12 @@ pub struct About {
 enum Glyph {
     Refresh,
     External,
-    Keyboard,
     Folder,
 }
 
 impl About {
-    /// Draws the section. Returns true when "Keyboard shortcuts" was
-    /// clicked (the caller shows the Hotkeys settings).
-    pub fn section(&mut self, ui: &mut egui::Ui, shared: &Shared, updater: &mut Updater) -> bool {
+    /// Draws the section.
+    pub fn section(&mut self, ui: &mut egui::Ui, shared: &Shared, updater: &mut Updater) {
         let theme = shared.theme.clone();
         let c = theme.colors.clone();
         let icon = self
@@ -37,7 +35,6 @@ impl About {
                 ui.ctx().load_texture("about-icon", egui::ColorImage::from_rgba_unmultiplied([96, 96], &px), egui::TextureOptions::LINEAR)
             })
             .clone();
-        let mut show_hotkeys = false;
         super::section(ui, shared, "About", |ui| {
             ui.horizontal(|ui| {
                 ui.add(egui::Image::new((icon.id(), vec2(44.0, 44.0))));
@@ -65,9 +62,6 @@ impl About {
                 if link_button(ui, shared, Glyph::External, "Release notes", true).on_hover_text("What's new in this version (GitHub)").clicked() {
                     crate::win::shell_open(&crate::update::release_notes_url());
                 }
-                if link_button(ui, shared, Glyph::Keyboard, "Keyboard shortcuts", true).on_hover_text("Settings \u{203a} Hotkeys").clicked() {
-                    show_hotkeys = true;
-                }
                 if link_button(ui, shared, Glyph::External, "Source code", true).on_hover_text(crate::update::source_url()).clicked() {
                     crate::win::shell_open(&crate::update::source_url());
                 }
@@ -77,7 +71,6 @@ impl About {
             });
             status_line(ui, shared, updater);
         });
-        show_hotkeys
     }
 }
 
@@ -150,14 +143,6 @@ fn paint_glyph(p: &egui::Painter, c: egui::Pos2, glyph: Glyph, color: Color32) {
             p.add(egui::Shape::line(vec![c + vec2(-0.5, -5.5), c + vec2(-5.5, -5.5), c + vec2(-5.5, 5.5), c + vec2(5.5, 5.5), c + vec2(5.5, 0.5)], s));
             p.line_segment([c + vec2(-1.0, 1.0), c + vec2(6.0, -6.0)], s);
             p.add(egui::Shape::line(vec![c + vec2(2.0, -6.0), c + vec2(6.0, -6.0), c + vec2(6.0, -2.0)], s));
-        }
-        Glyph::Keyboard => {
-            let r = Rect::from_center_size(c, vec2(14.0, 10.0));
-            p.rect_stroke(r, 2.0, s, egui::StrokeKind::Middle);
-            for i in 0..3 {
-                p.circle_filled(pos2(r.left() + 3.5 + i as f32 * 3.5, r.top() + 3.2), 0.9, color);
-            }
-            p.line_segment([pos2(r.left() + 3.5, r.bottom() - 3.0), pos2(r.right() - 3.5, r.bottom() - 3.0)], s);
         }
         Glyph::Folder => {
             p.add(egui::Shape::closed_line(
