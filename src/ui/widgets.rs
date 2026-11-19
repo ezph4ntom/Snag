@@ -101,12 +101,22 @@ pub fn status_pill(ui: &mut egui::Ui, theme: &Theme, dot: Color32, text: &str, t
     resp
 }
 
+/// How wide [`update_pill`] is with this text ("" = only the icon).
+pub fn update_pill_width(ui: &egui::Ui, theme: &Theme, text: &str) -> f32 {
+    if text.is_empty() {
+        return 34.0;
+    }
+    let font = egui::FontId::proportional(theme.fonts.body - 1.0);
+    ui.painter().layout_no_wrap(text.to_string(), font, Color32::WHITE).size().x + 40.0
+}
+
 /// The title bar's "Update to 0.7.0" button: tinted, outlined, with a
-/// download arrow; `fraction` fills it while downloading.
+/// download arrow; `fraction` fills it while downloading. An empty `text`
+/// makes a round icon-only button (narrow windows).
 pub fn update_pill(ui: &mut egui::Ui, theme: &Theme, text: &str, color: Color32, fraction: Option<f32>) -> Response {
     let font = egui::FontId::proportional(theme.fonts.body - 1.0);
     let galley = ui.painter().layout_no_wrap(text.to_string(), font, color);
-    let size = Vec2::new(galley.size().x + 40.0, 28.0);
+    let size = Vec2::new(update_pill_width(ui, theme, text), 28.0);
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
     let hot = resp.hovered() && fraction.is_none();
     let p = ui.painter();
@@ -119,7 +129,7 @@ pub fn update_pill(ui: &mut egui::Ui, theme: &Theme, text: &str, color: Color32,
     }
     p.rect_stroke(rect, radius, Stroke::new(1.0, color.gamma_multiply(if hot { 0.9 } else { 0.6 })), egui::StrokeKind::Inside);
     // A circled arrow pointing down.
-    let ic = pos2(rect.left() + 17.0, rect.center().y);
+    let ic = if text.is_empty() { rect.center() } else { pos2(rect.left() + 17.0, rect.center().y) };
     let s = Stroke::new(1.4, color);
     p.circle_stroke(ic, 6.5, s);
     p.line_segment([ic + vec2(0.0, -3.5), ic + vec2(0.0, 3.0)], s);
@@ -164,6 +174,17 @@ pub fn glyph_button(ui: &mut egui::Ui, glyph: Glyph, label: &str, fg: Color32, f
         }
     }
     resp
+}
+
+/// How wide `text` is on one line (no wrapping) in `style`.
+pub fn text_width(ui: &egui::Ui, text: impl Into<egui::WidgetText>, style: egui::TextStyle) -> f32 {
+    text.into().into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, style).size().x
+}
+
+/// How wide a plain text button with this label is (padding included, plus
+/// a pixel for rounding), to decide a layout before drawing it.
+pub fn button_width(ui: &egui::Ui, text: impl Into<egui::WidgetText>) -> f32 {
+    text_width(ui, text, egui::TextStyle::Button) + 2.0 * ui.spacing().button_padding.x + 1.0
 }
 
 /// A fixed-width, left-aligned label (keeps form rows in columns).

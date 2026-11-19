@@ -70,7 +70,7 @@ impl QualityTab {
             return;
         };
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            ui.set_max_width(820.0);
+            ui.set_max_width(ui.available_width().min(820.0));
             self.hardware_section(ui, shared, &hw);
             self.preset_section(ui, shared, &hw);
             self.manual_section(ui, shared, &hw);
@@ -160,17 +160,21 @@ impl QualityTab {
                         .stroke(egui::Stroke::new(if selected { 2.0 } else { 1.0 }, if selected { accent } else { shared.theme.colors.border.0 }))
                         .corner_radius(egui::CornerRadius::same(shared.theme.corner_radius as u8))
                         .inner_margin(egui::Margin::same(10));
+                    // Not the column's justified layout: text that wraps in a
+                    // narrow window would be stretched to both edges.
                     frame.show(col, |ui| {
                         ui.set_width(ui.available_width());
-                        let mut title = p.label().to_string();
-                        if p == rec.preset {
-                            title.push_str("  (recommended)");
-                        }
-                        if ui.radio(selected, RichText::new(title).strong()).clicked() {
-                            chosen = Some(p);
-                        }
-                        ui.label(format!("{w}x{h} @ {} fps", plan.fps));
-                        ui.label(format!("{:.1} Mbps · {}", plan.bitrate_kbps as f64 / 1000.0, plan.encoder.label()));
+                        ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                            let mut title = p.label().to_string();
+                            if p == rec.preset {
+                                title.push_str("  (recommended)");
+                            }
+                            if ui.radio(selected, RichText::new(title).strong()).clicked() {
+                                chosen = Some(p);
+                            }
+                            ui.label(format!("{w}x{h} @ {} fps", plan.fps));
+                            ui.label(format!("{:.1} Mbps · {}", plan.bitrate_kbps as f64 / 1000.0, plan.encoder.label()));
+                        });
                     });
                 }
             });

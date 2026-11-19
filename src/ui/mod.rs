@@ -650,7 +650,7 @@ impl App {
         let query = self.search.trim().to_string();
         let hits = search::search(&query);
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            ui.set_max_width(900.0);
+            ui.set_max_width(ui.available_width().min(900.0));
             ui.horizontal(|ui| {
                 let n = hits.len();
                 let what = if n == 1 { "1 setting".to_string() } else { format!("{n} settings") };
@@ -719,13 +719,35 @@ impl App {
 
     /// "Update to 0.7.0" left of the search box, while a newer release is
     /// out. Returns true when clicked.
-    fn update_button(ui: &mut egui::Ui, theme: &crate::themes::Theme, phase: &crate::update::Phase, version: &str, this_version: &str, opens_page: bool) -> bool {
+    /// The update button's text, `None` when there's no button.
+    fn update_text(phase: &crate::update::Phase, version: &str) -> Option<String> {
+        use crate::update::Phase;
+        match phase {
+            Phase::UpToDate => None,
+            Phase::Available => Some(format!("Update to {version}")),
+            Phase::Downloading(f) => Some(format!("Downloading {:.0}%", f * 100.0)),
+            Phase::Installing => Some("Installing update".to_string()),
+            Phase::Failed(_) => Some(format!("Update to {version} failed")),
+        }
+    }
+
+    /// `compact`: only the icon (a narrow window); the text moves to the
+    /// hover tip.
+    fn update_button(
+        ui: &mut egui::Ui,
+        theme: &crate::themes::Theme,
+        phase: &crate::update::Phase,
+        version: &str,
+        this_version: &str,
+        opens_page: bool,
+        compact: bool,
+    ) -> bool {
         use crate::update::Phase;
         let c = &theme.colors;
-        let (text, color, tip, fraction) = match phase {
+        let Some(text) = Self::update_text(phase, version) else { return false };
+        let (color, tip, fraction) = match phase {
             Phase::UpToDate => return false,
             Phase::Available => (
-                format!("Update to {version}"),
                 c.success.0,
                 if opens_page {
                     format!("Snag {version} is out (you have {this_version}). Click to open its download page.")
@@ -734,11 +756,12 @@ impl App {
                 },
                 None,
             ),
-            Phase::Downloading(f) => (format!("Downloading {:.0}%", f * 100.0), c.success.0, "Downloading the update from GitHub".to_string(), Some(*f)),
-            Phase::Installing => ("Installing update".to_string(), c.success.0, "Snag closes and starts again when the update is installed".to_string(), None),
-            Phase::Failed(e) => (format!("Update to {version} failed"), c.error.0, format!("{e}\n\nClick to try again."), None),
+            Phase::Downloading(f) => (c.success.0, "Downloading the update from GitHub".to_string(), Some(*f)),
+            Phase::Installing => (c.success.0, "Snag closes and starts again when the update is installed".to_string(), None),
+            Phase::Failed(e) => (c.error.0, format!("{e}\n\nClick to try again."), None),
         };
-        let r = widgets::update_pill(ui, theme, &text, color, fraction).on_hover_text(tip);
+        let (shown, tip) = if compact { (String::new(), format!("{text}\n\n{tip}")) } else { (text, tip) };
+        let r = widgets::update_pill(ui, theme, &shown, color, fraction).on_hover_text(tip);
         if matches!(phase, Phase::Available | Phase::Failed(_)) {
             r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
         } else {
@@ -920,10 +943,20 @@ impl eframe::App for App {
                             toggle_badge = true;
                         }
                         ui.add_space(10.0);
-                        widgets::search_box(ui, &theme, &mut search, 240.0, focus_search, "Search settings")
+                        // In a narrow window, so nothing covers the tabs: the
+                        // search box shrinks from 240 to 120 px, then the update
+                        // button shows only its icon (text on hover), then the
+                        // search box goes down to 72 px.
+                        let gaps = 10.0 + 2.0 * ui.spacing().item_spacing.x;
+                        let avail = ui.available_width() - gaps;
+                        let upd_full = Self::update_text(&update_phase, &update_version).map_or(0.0, |t| widgets::update_pill_width(ui, &theme, &t));
+                        let compact = upd_full > 0.0 && avail - upd_full < 120.0;
+                        let upd_w = if compact { widgets::update_pill_width(ui, &theme, "") } else { upd_full };
+                        let search_w = (avail - upd_w).clamp(72.0, 240.0);
+                        widgets::search_box(ui, &theme, &mut search, search_w, focus_search, "Search settings")
                             .on_hover_text("Search all settings (Ctrl+F)");
                         ui.add_space(10.0);
-                        if Self::update_button(ui, &theme, &update_phase, &update_version, &this_version, update_opens_page) {
+                        if Self::update_button(ui, &theme, &update_phase, &update_version, &this_version, update_opens_page, compact) {
                             start_update = true;
                         }
                     },

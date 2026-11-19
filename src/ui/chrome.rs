@@ -223,12 +223,27 @@ pub fn title_bar(
     let slots_right = rect.right() - 3.0 * BUTTON_W - 8.0;
     if slots_right > slots_left {
         let slot = Rect::from_min_max(pos2(slots_left, rect.top()), pos2(slots_right, rect.bottom()));
+        // The right part only gets what the tabs leave (their width from the
+        // last frame), so in a narrow window it shrinks (the search box)
+        // instead of drawing over them.
+        let mid_id = egui::Id::unique("titlebar-middle-width");
+        let mid_need = ctx.data(|d| d.get_temp::<f32>(mid_id)).unwrap_or(0.0);
+        let right_left = if mid_need > 0.0 { (slots_left + mid_need + 12.0).min(slots_right) } else { slots_left };
+        let right_slot = Rect::from_min_max(pos2(right_left, rect.top()), pos2(slots_right, rect.bottom()));
         let used = ui
-            .scope_builder(egui::UiBuilder::new().max_rect(slot).layout(egui::Layout::right_to_left(egui::Align::Center)), right)
+            .scope_builder(egui::UiBuilder::new().max_rect(right_slot).layout(egui::Layout::right_to_left(egui::Align::Center)), right)
             .response
             .rect;
         let mid = Rect::from_min_max(slot.min, pos2((used.left() - 12.0).max(slot.left()), slot.bottom()));
-        ui.scope_builder(egui::UiBuilder::new().max_rect(mid).layout(egui::Layout::left_to_right(egui::Align::Center)), middle);
+        let mid_w = ui
+            .scope_builder(egui::UiBuilder::new().max_rect(mid).layout(egui::Layout::left_to_right(egui::Align::Center)), middle)
+            .response
+            .rect
+            .width();
+        if (mid_w - mid_need).abs() > 0.5 {
+            ctx.data_mut(|d| d.insert_temp(mid_id, mid_w));
+            ctx.request_discard("title bar: tabs width changed");
+        }
     }
 
     // Caption buttons, right to left.

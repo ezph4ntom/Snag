@@ -217,7 +217,7 @@ impl SettingsTab {
         let mut in_view = None;
         egui::CentralPanel::no_frame().show(ui, |ui| {
             egui::ScrollArea::vertical().id_salt("settings-page").auto_shrink([false, false]).show(ui, |ui| {
-                ui.set_max_width(760.0);
+                ui.set_max_width(ui.available_width().min(760.0));
                 let view = ui.clip_rect();
                 let mut last_top = 0.0;
                 for (i, c) in Category::ALL.into_iter().enumerate() {
@@ -645,11 +645,17 @@ impl SettingsTab {
         ];
         let mut edited: Vec<(Folder, PathBuf)> = Vec::new();
         section(ui, shared, "Folders", |ui| {
+            // The path box is 420 px when there's room and narrower in a
+            // small window, so Browse / Open stay inside the card.
+            use super::widgets::{button_width, text_width};
+            let label_w = rows.iter().map(|r| text_width(ui, r.1, egui::TextStyle::Body)).fold(0.0, f32::max);
+            let buttons_w = button_width(ui, "Browse") + button_width(ui, "Open") + ui.spacing().item_spacing.x;
+            let field_w = (ui.available_width() - label_w - buttons_w - 2.0 * 12.0).clamp(160.0, 420.0);
             egui::Grid::new("folders").num_columns(3).spacing([12.0, 8.0]).show(ui, |ui| {
                 for (which, label, path) in &rows {
                     ui.label(*label);
                     let mut text = path.display().to_string();
-                    if ui.add_sized([420.0, 22.0], egui::TextEdit::singleline(&mut text)).changed() {
+                    if ui.add_sized([field_w, 22.0], egui::TextEdit::singleline(&mut text)).changed() {
                         edited.push((*which, PathBuf::from(text)));
                     }
                     ui.horizontal(|ui| {

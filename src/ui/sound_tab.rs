@@ -290,7 +290,9 @@ impl SoundTab {
 
     pub fn ui(&mut self, ui: &mut egui::Ui, shared: &mut Shared) {
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            ui.set_max_width(900.0);
+            // At most 900 px, but never wider than the window (a bare
+            // set_max_width would widen the page past a narrow window).
+            ui.set_max_width(ui.available_width().min(900.0));
             self.recording_section(ui, shared);
             self.sources_section(ui, shared);
         });
@@ -343,8 +345,23 @@ impl SoundTab {
                 if rows.len() == 1 && !a.whole_pc {
                     ui.label(dim(shared, "No apps are playing sound right now. Start one and it shows up here."));
                 }
+                // The name column (up to 250 px) and the slider (up to 200)
+                // share what the fixed parts leave, so the rows fit a narrow
+                // window; the same widths for every row keep the columns
+                // lined up. The fixed parts' width comes from the last frame.
+                let fixed_id = egui::Id::unique("sound-row-fixed-width");
+                let fixed = ui.data(|d| d.get_temp::<f32>(fixed_id)).unwrap_or(342.0);
+                let spare = ui.available_width() - fixed;
+                let name_w = (spare - 200.0).clamp(140.0, 250.0);
+                let slider_w = (spare - name_w).clamp(100.0, 200.0);
+                let mut widest = 0.0f32;
                 for row in &rows {
-                    Self::full_row(ui, shared, &snap, &mut a, row);
+                    widest = widest.max(Self::full_row(ui, shared, &snap, &mut a, row, name_w, slider_w));
+                }
+                let measured = widest - name_w - slider_w;
+                if !rows.is_empty() && (measured - fixed).abs() > 0.5 {
+                    ui.data_mut(|d| d.insert_temp(fixed_id, measured));
+                    ui.ctx().request_discard("sound rows: fixed width changed");
                 }
             });
         });
@@ -352,17 +369,18 @@ impl SoundTab {
     }
 
     /// A row on the Sound tab: Record box, name, level meter, value, slider.
-    fn full_row(ui: &mut egui::Ui, shared: &Shared, snap: &Snapshot, a: &mut AudioSettings, row: &Row) {
+    /// Returns how wide the row is.
+    fn full_row(ui: &mut egui::Ui, shared: &Shared, snap: &Snapshot, a: &mut AudioSettings, row: &Row, name_w: f32, slider_w: f32) -> f32 {
         let theme = shared.theme.clone();
         let c = &theme.colors;
         let (mut include, mut volume) = (row.include, row.volume);
-        ui.horizontal(|ui| {
+        let row_w = ui.horizontal(|ui| {
             ui.set_min_height(48.0);
             ui.checkbox(&mut include, "").on_hover_text("Record this source");
             let (main, sub) = split_name(&row.name);
-            ui.allocate_ui_with_layout(vec2(250.0, 44.0), egui::Layout::top_down(egui::Align::Min), |ui| {
-                ui.set_min_width(250.0);
-                ui.set_max_width(250.0);
+            ui.allocate_ui_with_layout(vec2(name_w, 44.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                ui.set_min_width(name_w);
+                ui.set_max_width(name_w);
                 ui.spacing_mut().item_spacing.y = 1.0;
                 ui.add(egui::Label::new(RichText::new(main).strong()).truncate()).on_hover_text(&row.name);
                 let detail = if sub.is_empty() { row.kind.to_string() } else { format!("{} · {sub}", row.kind) };
@@ -372,7 +390,7 @@ impl SoundTab {
             ui.add_space(6.0);
             ui.add_enabled_ui(include, |ui| {
                 widgets::value_box(ui, &theme, &format!("{}", (volume * 100.0).round()), "%", 64.0);
-                if widgets::pill_slider(ui, &theme, &mut volume, 200.0).changed() {
+                if widgets::pill_slider(ui, &theme, &mut volume, slider_w).changed() {
                     volume = (volume * 100.0).round() / 100.0;
                 }
             });
@@ -387,11 +405,15 @@ impl SoundTab {
                 });
                 a.mic_device = device;
             }
-        });
+        })
+        .response
+        .rect
+        .width();
         if include != row.include || volume != row.volume {
             Self::apply(a, row, include, volume);
         }
         ui.separator();
+        row_w
     }
 
     /// The Live tab's "Sound in clips": the recorded sources with a volume

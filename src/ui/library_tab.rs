@@ -1211,7 +1211,7 @@ impl LibraryTab {
         let mut clear_expired = false;
         let mut copy = None;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            ui.set_max_width(980.0);
+            ui.set_max_width(ui.available_width().min(980.0));
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if self.store.uploads.iter().any(UploadRecord::expired) && ui.button("Remove expired").clicked() {
