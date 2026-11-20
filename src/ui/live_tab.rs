@@ -71,7 +71,8 @@ impl LiveTab {
                 }
                 self.size = (w, h);
             }
-            ui.ctx().request_repaint_after(Duration::from_millis(33));
+            // No timed redraw here: `preview::watch` wakes the window when
+            // the core writes a new frame.
         } else if self.texture.is_some() {
             self.texture = None; // free the preview's memory while it's off
         }
@@ -152,7 +153,7 @@ impl LiveTab {
             if app_on {
                 let waiting = status.as_ref().is_some_and(|s| s.app_waiting);
                 let (text, col) = if waiting {
-                    (format!("Waiting for {}: it's closed or minimized, so clips show black until it's back.", cap.window_exe), c.warning.0)
+                    (format!("Waiting for {}: it's closed, minimized or not responding, so clips show black until it's back.", cap.window_exe), c.warning.0)
                 } else {
                     (format!("Only {} is recorded, even when other windows are in front.", cap.window_exe), c.text_dim.0)
                 };

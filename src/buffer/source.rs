@@ -59,7 +59,7 @@ pub trait FrameSource: Send {
     fn current_monitor(&self) -> isize {
         0
     }
-    /// Capturing one app that isn't on screen (closed or minimized): the
+    /// Capturing one app that isn't on screen (closed, minimized, hidden or not responding): the
     /// stream is black until it's back.
     fn waiting(&self) -> bool {
         false
@@ -77,6 +77,9 @@ pub trait FrameSource: Send {
 
 /// How often to look for the chosen app's window while it isn't there.
 const LOOK_EVERY: Duration = Duration::from_secs(2);
+/// How often to check that the captured window is still showing (hidden,
+/// hung or on another desktop: see `window::not_showing`).
+const CHECK_EVERY: Duration = Duration::from_millis(250);
 /// A window that gives no picture this long after capture started is
 /// recorded as black (so the buffer still starts).
 const FIRST_FRAME_WAIT: Duration = Duration::from_secs(1);
@@ -96,6 +99,7 @@ pub struct WgcSource {
     /// The window being captured (0 = none).
     hwnd: isize,
     next_look: Instant,
+    next_check: Instant,
     attached_at: Instant,
     /// A real frame arrived since attaching.
     got_frame: bool,
@@ -121,6 +125,7 @@ impl WgcSource {
             window: None,
             hwnd: 0,
             next_look: now,
+            next_check: now,
             attached_at: now,
             got_frame: false,
             black: false,
@@ -138,20 +143,29 @@ impl WgcSource {
         Ok(s)
     }
 
-    /// Window mode: notices the window closing, and looks for it again
-    /// (every LOOK_EVERY) while it isn't there.
+    /// Window mode: notices the window closing, or no longer showing
+    /// (hidden, hung, another desktop: checked every CHECK_EVERY), and looks
+    /// for it again (every LOOK_EVERY) while it isn't there. A window that
+    /// is only covered, unfocused or static keeps being recorded.
     fn watch_window(&mut self) {
         let Some(t) = &self.window else { return };
+        let now = Instant::now();
         if let Some(c) = &self.capture {
-            if !c.is_closed() && window::exists(self.hwnd) {
-                return;
-            }
-            log::info!("{} closed; waiting for it to come back", t.exe);
+            let why = if c.is_closed() {
+                Some("closed")
+            } else if now >= self.next_check {
+                self.next_check = now + CHECK_EVERY;
+                window::not_showing(self.hwnd)
+            } else {
+                None
+            };
+            let Some(why) = why else { return };
+            log::info!("{} {why}; recording black until it's back", t.exe);
             self.capture = None;
             self.hwnd = 0;
-            self.next_look = Instant::now();
+            self.next_look = now;
         }
-        if Instant::now() < self.next_look {
+        if now < self.next_look {
             return;
         }
         self.next_look = Instant::now() + LOOK_EVERY;
@@ -169,6 +183,7 @@ impl WgcSource {
                 }
                 self.capture = Some(c);
                 self.hwnd = hwnd;
+                self.next_check = Instant::now() + CHECK_EVERY;
                 self.attached_at = Instant::now();
                 self.got_frame = false;
                 self.converter = None;
@@ -202,7 +217,7 @@ impl FrameSource for WgcSource {
         }
 
         if self.window.is_some() {
-            // 2a. One app: black while it's closed or minimized, and when
+            // 2a. One app: black while it's not showing (closed, minimized, hidden, hung), and when
             // it gives no picture at all (exclusive fullscreen, protected).
             self.watch_window();
             let hidden = self.capture.is_none() || window::is_minimized(self.hwnd);

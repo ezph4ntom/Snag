@@ -51,7 +51,7 @@ pub struct CoreStatus {
     pub rec_saving: bool,
     /// Capturing only this app (`game.exe`), not a monitor.
     pub capturing_app: Option<String>,
-    /// That app isn't on screen (closed or minimized): clips show black.
+    /// That app isn't on screen (closed, minimized, hidden or not responding): clips show black.
     pub app_waiting: bool,
 }
 

@@ -408,6 +408,11 @@ fn pacer_main(
 
     let mut tick: u64 = 0;
     let preview_every = (cfg.fps as u64 / 30).max(1); // ~30 previews a second
+    // Counts new frames; the preview only gets a frame it doesn't have yet
+    // (a static screen or "waiting" black costs no preview work, and the
+    // window isn't woken for the same picture).
+    let mut frame_no: u64 = 0;
+    let mut previewed: Option<u64> = None;
     let mut drops_this_window: u64 = 0;
     let mut window_start = Instant::now();
     let result: Result<()> = 'run: loop {
@@ -466,15 +471,19 @@ fn pacer_main(
             Produced::New => {
                 pool.free.push(buf.clone());
                 last = buf;
+                frame_no += 1;
             }
             Produced::Unchanged => {
                 pool.free.push(buf);
                 session.stats.frames_unchanged.fetch_add(1, Ordering::Relaxed);
             }
         }
-        // Live preview for the window (~30 fps, only while it's shown).
-        if crate::capture::preview::WANTED.load(Ordering::Relaxed) && tick.is_multiple_of(preview_every) {
-            crate::capture::preview::offer(&last);
+        // Live preview for the window (~30 fps, only while it's shown, and
+        // only frames it doesn't have yet).
+        if !crate::capture::preview::WANTED.load(Ordering::Relaxed) {
+            previewed = None; // shown again later: send the current frame
+        } else if tick.is_multiple_of(preview_every) && previewed != Some(frame_no) && crate::capture::preview::offer(&last) {
+            previewed = Some(frame_no);
         }
         if frame_tx.send(last.clone()).is_err() {
             break 'run Ok(());

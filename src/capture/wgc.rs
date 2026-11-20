@@ -123,8 +123,8 @@ impl WgcCapture {
 
     /// Starts capturing one window: only its own pixels, even when other
     /// windows cover it or it's on another monitor. When it's resized, the
-    /// pool is recreated (see `Shared::accept`) and the converter
-    /// letterboxes it into the fixed output size.
+    /// pool is recreated (see `Shared::accept`) and the converter stretches
+    /// it to the fixed output size.
     pub fn start_for_window(d3d: &D3D, hwnd: isize, capture_cursor: bool) -> Result<Self> {
         let interop = interop()?;
         // SAFETY: a window handle from EnumWindows; a stale one just fails.

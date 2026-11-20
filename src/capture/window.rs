@@ -6,8 +6,8 @@ use windows::Win32::Foundation::{HWND, LPARAM, RECT};
 use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GW_OWNER, GWL_EXSTYLE, GetClassNameW, GetWindow, GetWindowLongW, GetWindowRect,
-    GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible,
-    WS_EX_TOOLWINDOW,
+    GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsHungAppWindow, IsIconic, IsWindow,
+    IsWindowVisible, WS_EX_TOOLWINDOW,
 };
 use windows::core::BOOL;
 
@@ -57,13 +57,56 @@ pub fn find(exe: &str, title: &str) -> Option<isize> {
     if exe.is_empty() {
         return None;
     }
-    let mine: Vec<AppWindow> = list().into_iter().filter(|w| w.exe.eq_ignore_ascii_case(exe)).collect();
+    // A hung window isn't picked: it shows nothing new (see `not_showing`).
+    let mine: Vec<AppWindow> = list()
+        .into_iter()
+        .filter(|w| w.exe.eq_ignore_ascii_case(exe) && !is_hung(HWND(w.hwnd as *mut _)))
+        .collect();
     mine.iter().find(|w| w.title == title).or(mine.first()).map(|w| w.hwnd)
 }
 
 pub fn exists(hwnd: isize) -> bool {
     // SAFETY: IsWindow accepts any value.
     unsafe { IsWindow(Some(HWND(hwnd as *mut _))).as_bool() }
+}
+
+/// Why a captured window shows nothing new, or None while it's fine
+/// (minimized counts as fine: the capture resumes when it's restored).
+/// Windows Graphics Capture just stops sending frames for a window that is
+/// hidden (a game shutting down slowly, e.g. FiveM after `quit`), on another
+/// virtual desktop, or hung, and never says so; recording on would repeat
+/// its last frame forever.
+pub fn not_showing(hwnd: isize) -> Option<&'static str> {
+    let h = HWND(hwnd as *mut _);
+    // SAFETY: plain queries; they accept stale handles.
+    unsafe {
+        if !IsWindow(Some(h)).as_bool() {
+            Some("closed")
+        } else if !IsWindowVisible(h).as_bool() {
+            Some("was hidden")
+        } else if is_cloaked(h) {
+            Some("isn't on this desktop")
+        } else if is_hung(h) {
+            Some("stopped responding")
+        } else {
+            None
+        }
+    }
+}
+
+/// "Not responding": no messages handled for 5 s (Windows' own rule).
+fn is_hung(hwnd: HWND) -> bool {
+    // SAFETY: plain query on a window handle.
+    unsafe { IsHungAppWindow(hwnd).as_bool() }
+}
+
+/// Hidden by the system although "visible": another virtual desktop, or a
+/// suspended store app.
+fn is_cloaked(hwnd: HWND) -> bool {
+    let mut cloaked = 0u32;
+    // SAFETY: a 4-byte out-param, as DWMWA_CLOAKED requires.
+    let got = unsafe { DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &mut cloaked as *mut u32 as *mut _, 4) };
+    got.is_ok() && cloaked != 0
 }
 
 pub fn is_minimized(hwnd: isize) -> bool {
@@ -113,9 +156,7 @@ fn wanted(hwnd: HWND) -> bool {
         if GetWindowLongW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_TOOLWINDOW.0 != 0 {
             return false;
         }
-        let mut cloaked = 0u32;
-        let got = DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &mut cloaked as *mut u32 as *mut _, 4);
-        if got.is_ok() && cloaked != 0 {
+        if is_cloaked(hwnd) {
             return false;
         }
         let mut class = [0u16; 64];

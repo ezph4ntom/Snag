@@ -5,7 +5,8 @@
 //! offers every other frame (about 30 per second) to a preview thread, which
 //! shrinks the encoder's NV12 frame to at most 960 pixels wide, converts it
 //! to RGBA and writes it into a named shared-memory block. The window maps
-//! the same block and redraws when the frame counter changes.
+//! the same block, and a small watcher thread (`watch`) wakes it only when
+//! the frame counter changes.
 //!
 //! Layout of the block: `[seq u32][width u32][height u32][pad u32][rgba...]`.
 //! `seq` is odd while a frame is being written (a "seqlock"): the reader
@@ -14,16 +15,19 @@
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{SyncSender, sync_channel};
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use windows::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
 use windows::Win32::System::Memory::{
     CreateFileMappingW, FILE_MAP_ALL_ACCESS, FILE_MAP_READ, MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile,
     OpenFileMappingW, PAGE_READWRITE, UnmapViewOfFile,
 };
-use windows::core::w;
+use windows::core::HSTRING;
 
 use crate::encode::Nv12Frame;
 
+/// The shared block's name (per Windows session).
+const NAME: &str = "Local\\Snag.Preview";
 pub const MAX_W: u32 = 960;
 pub const MAX_H: u32 = 600;
 const HEADER: usize = 16;
@@ -68,14 +72,15 @@ impl Drop for Mapping {
 static SENDER: OnceLock<SyncSender<Arc<Nv12Frame>>> = OnceLock::new();
 
 /// Offers a recorded frame for the preview. Never blocks: if the preview
-/// thread is still busy with the previous one, this frame is skipped.
-pub fn offer(frame: &Arc<Nv12Frame>) {
+/// thread is still busy with the previous one, this frame is skipped
+/// (returns false; offer it again later).
+pub fn offer(frame: &Arc<Nv12Frame>) -> bool {
     let tx = SENDER.get_or_init(|| {
         let (tx, rx) = sync_channel::<Arc<Nv12Frame>>(1);
         std::thread::Builder::new()
             .name("preview".into())
             .spawn(move || {
-                let Some(map) = create() else { return };
+                let Some(map) = create(NAME) else { return };
                 let mut rgba = Vec::new();
                 for f in rx {
                     let (w, h) = shrink_to_rgba(&f, &mut rgba);
@@ -86,14 +91,13 @@ pub fn offer(frame: &Arc<Nv12Frame>) {
             .expect("spawn preview thread");
         tx
     });
-    let _ = tx.try_send(frame.clone());
+    tx.try_send(frame.clone()).is_ok()
 }
 
-fn create() -> Option<Mapping> {
+fn create(name: &str) -> Option<Mapping> {
     // SAFETY: a pagefile-backed named mapping and a view of all of it.
     unsafe {
-        let handle =
-            CreateFileMappingW(INVALID_HANDLE_VALUE, None, PAGE_READWRITE, 0, SIZE as u32, w!("Local\\Snag.Preview")).ok()?;
+        let handle = CreateFileMappingW(INVALID_HANDLE_VALUE, None, PAGE_READWRITE, 0, SIZE as u32, &HSTRING::from(name)).ok()?;
         let view = MapViewOfFile(handle, FILE_MAP_ALL_ACCESS, 0, 0, SIZE);
         if view.Value.is_null() {
             let _ = CloseHandle(handle);
@@ -128,10 +132,55 @@ fn write(map: &Mapping, w: u32, h: u32, rgba: &[u8]) {
 /// Shrinks an NV12 frame (BT.709 limited range, what the GPU converter
 /// produces) to RGBA no wider than MAX_W, by a whole-number step. Each output
 /// pixel averages a 2x2 block of brightness samples (smooth edges, no
-/// shimmer), and the color math is integer-only: about 2 ms for 1080p ->
-/// 960x540, so 30 previews a second cost a few percent of one core.
+/// shimmer), and the color math is integer-only: about 1.5 ms for 1080p ->
+/// 960x540. Only new frames are shrunk (see the pacer), so a static screen
+/// costs nothing.
 pub fn shrink_to_rgba(f: &Nv12Frame, out: &mut Vec<u8>) -> (u32, u32) {
     let step = f.width.div_ceil(MAX_W).max(f.height.div_ceil(MAX_H)).max(1) as usize;
+    if step == 2 {
+        halve_to_rgba(f, out)
+    } else {
+        shrink_any(f, step, out)
+    }
+}
+
+/// BT.709 limited-range YUV -> RGB, integer math (the color step of
+/// `shrink_to_rgba`).
+#[inline(always)]
+fn yuv_to_rgb(yy: i32, u: u8, v: u8, o: &mut [u8]) {
+    let c = 298 * (yy - 16);
+    let (du, dv) = (u as i32 - 128, v as i32 - 128);
+    let px = |v: i32| ((v + 128) >> 8).clamp(0, 255) as u8;
+    o[0] = px(c + 459 * dv);
+    o[1] = px(c - 55 * du - 136 * dv);
+    o[2] = px(c + 541 * du);
+}
+
+/// `shrink_to_rgba` for the common case (1080p and similar: exactly half
+/// size): the same math, walking the rows in pairs of pixels so there are no
+/// per-pixel bounds checks (1.5 instead of 2 ms for 1080p here).
+fn halve_to_rgba(f: &Nv12Frame, out: &mut Vec<u8>) -> (u32, u32) {
+    let (fw, fh) = (f.width as usize, f.height as usize);
+    let (w, h) = ((fw / 2) & !1, (fh / 2) & !1);
+    out.clear();
+    out.resize(w * h * 4, 255);
+    let (luma, uv_plane) = f.data.split_at(fw * fh);
+    for (y, dst) in out.chunks_exact_mut(w * 4).enumerate() {
+        let sy = y * 2;
+        let r0 = &luma[sy * fw..][..w * 2];
+        let r1 = &luma[(sy + 1).min(fh - 1) * fw..][..w * 2];
+        let uv = &uv_plane[(sy / 2) * fw..][..w * 2];
+        let pairs = r0.as_chunks::<2>().0.iter().zip(r1.as_chunks::<2>().0).zip(uv.as_chunks::<2>().0);
+        for (o, ((a, b), c)) in dst.as_chunks_mut::<4>().0.iter_mut().zip(pairs) {
+            let yy = (a[0] as i32 + a[1] as i32 + b[0] as i32 + b[1] as i32 + 2) / 4;
+            yuv_to_rgb(yy, c[0], c[1], o);
+        }
+    }
+    (w as u32, h as u32)
+}
+
+/// Any whole-number step (bigger monitors, odd sizes).
+fn shrink_any(f: &Nv12Frame, step: usize, out: &mut Vec<u8>) -> (u32, u32) {
     let (w, h) = ((f.width as usize / step) & !1, (f.height as usize / step) & !1);
     out.clear();
     out.resize(w * h * 4, 255);
@@ -148,20 +197,69 @@ pub fn shrink_to_rgba(f: &Nv12Frame, out: &mut Vec<u8>) -> (u32, u32) {
             let sx = x * step;
             let sx2 = (sx + d).min(fw - 1);
             let yy = (r0[sx] as i32 + r0[sx2] as i32 + r1[sx] as i32 + r1[sx2] as i32 + 2) / 4;
-            let c = 298 * (yy - 16);
-            let du = uv[sx & !1] as i32 - 128;
-            let dv = uv[(sx & !1) + 1] as i32 - 128;
-            let px = |v: i32| ((v + 128) >> 8).clamp(0, 255) as u8;
-            let o = &mut dst[x * 4..x * 4 + 3];
-            o[0] = px(c + 459 * dv);
-            o[1] = px(c - 55 * du - 136 * dv);
-            o[2] = px(c + 541 * du);
+            yuv_to_rgb(yy, uv[sx & !1], uv[(sx & !1) + 1], &mut dst[x * 4..x * 4 + 3]);
         }
     }
     (w as u32, h as u32)
 }
 
 // ---- window side -------------------------------------------------------------
+
+/// Set by the window while it shows the preview; `watch` only looks then.
+pub static WATCHING: AtomicBool = AtomicBool::new(false);
+
+/// The core's block, read-only (None until the core created it).
+fn open(name: &str) -> Option<Mapping> {
+    // SAFETY: opening the core's named mapping read-only.
+    unsafe {
+        let handle = OpenFileMappingW(FILE_MAP_READ.0, false, &HSTRING::from(name)).ok()?;
+        let view = MapViewOfFile(handle, FILE_MAP_READ, 0, 0, SIZE);
+        if view.Value.is_null() {
+            let _ = CloseHandle(handle);
+            return None;
+        }
+        Some(Mapping { handle, view })
+    }
+}
+
+/// Calls `on_new` (on its own thread) each time the core writes a new
+/// preview frame, so the window redraws only then instead of 30 times a
+/// second whether or not anything arrived (a static screen, the buffer off,
+/// "Waiting for..."). Looks at the frame counter every 15 ms while
+/// `WATCHING` is set, otherwise sleeps. Start it once; it lives as long as
+/// the window process.
+pub fn watch(on_new: impl Fn() + Send + 'static) {
+    watch_named(NAME, on_new);
+}
+
+fn watch_named(name: &'static str, on_new: impl Fn() + Send + 'static) {
+    let spawned = std::thread::Builder::new().name("preview-watch".into()).spawn(move || {
+        let mut map: Option<Mapping> = None;
+        let mut last = 0u32;
+        loop {
+            if !WATCHING.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(200));
+                continue;
+            }
+            std::thread::sleep(Duration::from_millis(15));
+            let Some(m) = map.as_ref() else {
+                map = open(name);
+                if map.is_none() {
+                    std::thread::sleep(Duration::from_millis(500)); // no core yet
+                }
+                continue;
+            };
+            let s = m.seq().load(Ordering::Acquire);
+            if s & 1 == 0 && s != last {
+                last = s;
+                on_new();
+            }
+        }
+    });
+    if let Err(e) = spawned {
+        log::warn!("preview watcher: {e}");
+    }
+}
 
 /// The window's read-only view of the preview block.
 #[derive(Default)]
@@ -170,22 +268,12 @@ pub struct Reader {
     last_seq: u32,
 }
 
-
 impl Reader {
     /// A new frame, if the core wrote one since the last call:
     /// (width, height, rgba).
     pub fn next_frame(&mut self) -> Option<(u32, u32, Vec<u8>)> {
         if self.map.is_none() {
-            // SAFETY: opening the core's named mapping read-only.
-            self.map = unsafe {
-                let handle = OpenFileMappingW(FILE_MAP_READ.0, false, w!("Local\\Snag.Preview")).ok()?;
-                let view = MapViewOfFile(handle, FILE_MAP_READ, 0, 0, SIZE);
-                if view.Value.is_null() {
-                    let _ = CloseHandle(handle);
-                    return None;
-                }
-                Some(Mapping { handle, view })
-            };
+            self.map = open(NAME);
         }
         let map = self.map.as_ref()?;
         let seq = map.seq();
@@ -233,5 +321,56 @@ mod tests {
         assert_eq!(&out[..4], &[255, 255, 255, 255]);
         let last = out.len() - 4;
         assert_eq!(&out[last..], &[0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn fast_half_size_path_matches_the_general_one() {
+        for (w, h) in [(1920u32, 1080u32), (1600, 900), (1280, 1024)] {
+            let mut f = Nv12Frame::new(w, h);
+            for (i, v) in f.data.iter_mut().enumerate() {
+                *v = (i * 7 % 251) as u8;
+            }
+            let (mut fast, mut slow) = (Vec::new(), Vec::new());
+            assert_eq!(halve_to_rgba(&f, &mut fast), shrink_any(&f, 2, &mut slow), "{w}x{h} size");
+            assert!(fast == slow, "{w}x{h}: pixels differ");
+        }
+    }
+
+    #[test]
+    #[ignore = "timing only: cargo test --release --lib -- --ignored shrink_speed --nocapture"]
+    fn shrink_speed() {
+        let mut f = Nv12Frame::new(1920, 1080);
+        for (i, v) in f.data.iter_mut().enumerate() {
+            *v = (i * 7 % 251) as u8;
+        }
+        let mut out = Vec::new();
+        let t = std::time::Instant::now();
+        for _ in 0..200 {
+            shrink_to_rgba(&f, &mut out);
+        }
+        println!("shrink_to_rgba 1080p -> 960x540: {:.2} ms per frame", t.elapsed().as_secs_f64() * 1000.0 / 200.0);
+    }
+
+    #[test]
+    fn watcher_wakes_the_window_once_per_new_frame() {
+        // Its own block (never the real one, so a running Snag isn't touched).
+        let name: &'static str = Box::leak(format!("Local\\Snag.Preview.test.{}", std::process::id()).into_boxed_str());
+        let map = create(name).expect("test block");
+        let wakes = Arc::new(AtomicU32::new(0));
+        let w = wakes.clone();
+        WATCHING.store(true, Ordering::Relaxed);
+        watch_named(name, move || {
+            w.fetch_add(1, Ordering::Relaxed);
+        });
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(wakes.load(Ordering::Relaxed), 0, "no frame yet: no wake-up");
+        let rgba = vec![200u8; 8 * 8 * 4];
+        for n in 1..=3 {
+            write(&map, 8, 8, &rgba);
+            std::thread::sleep(Duration::from_millis(150));
+            assert_eq!(wakes.load(Ordering::Relaxed), n, "one wake-up per new frame");
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(wakes.load(Ordering::Relaxed), 3, "nothing new: no more wake-ups");
     }
 }

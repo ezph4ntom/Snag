@@ -121,8 +121,18 @@ cargo test --release --test reliability -- --ignored --nocapture   # 50-clip tes
 cargo test --release --test trimmer -- --ignored --nocapture       # trim exactness + preview sound (~10 s)
 cargo test --release --test recording -- --ignored --nocapture     # long recordings: snapshot + stop (~15 s)
 cargo test --release --test audio_capture -- --ignored --nocapture # apps on two devices, mic (plays quiet tones)
-cargo test --release --test window_capture -- --ignored --nocapture # "only this app": covered, minimized, resized, closed, reopened (~20 s)
+cargo test --release --test window_capture -- --ignored --nocapture # "only this app": covered, minimized, resized (stretched), closed, reopened (~20 s)
+cargo test --release --test window_gone -- --ignored --nocapture --test-threads=1 # the app's window hidden, hung, destroyed, process killed/exited, leftovers (~100 s)
+cargo test --release --test usage -- --ignored --nocapture --exact record_monitor # 1080p60 for a minute; measure CPU/GPU/memory from outside
 ```
+
+The window tests show small windows in the corner of the primary monitor
+(Windows Graphics Capture gets no frames from a window that is off every
+monitor). `usage` only records and prints frame counts: read the process's
+CPU time, memory and handles, and the `Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine`
+WMI counters (locale independent) for its pid and its ffmpeg child, while
+it runs. `SNAG_USAGE_PREVIEW=1` also makes Live-tab preview frames (not
+while Snag itself runs: they go to its real preview block).
 
 * `fifty_clips_synthetic`: records a synthetic 1080p60 source whose every
   frame carries a barcode of its frame number, plus a beep at every whole
@@ -161,7 +171,7 @@ The core and UI talk over the UI's stdin/stdout, one JSON message per line
  Windows Graphics Capture        GPU (Direct3D 11)                     CPU                 ffmpeg
  ------------------------   -------------------------------   --------------------   ------------------------
  frame when screen changes ->  copy -> video processor:      ->  read back NV12   ->  upload to encoder GPU
- (newest only, mailbox)        BGRA -> NV12, scale, letterbox    (1 frame behind,     NVENC/AMF/QSV/x264
+ (newest only, mailbox)        BGRA -> NV12, stretch to fill     (1 frame behind,     NVENC/AMF/QSV/x264
                                                                  never stalls)        + AAC audio
                                      ^                                                -> 1 s fMP4 segments
                          pacer thread: exactly `fps` ticks/s                             (rolling, on disk)
@@ -197,7 +207,8 @@ The core and UI talk over the UI's stdin/stdout, one JSON message per line
   never touches the recording pipeline, so there's no hiccup.
 * **Monitor switching**: the encoder size is fixed. A new capture session
   starts on the other monitor while the pacer repeats the last frame
-  (about 20 ms), and a monitor with a different aspect ratio is letterboxed.
+  (about 20 ms), and a monitor (or app window) with a different aspect ratio
+  is stretched to fill the clip, the way a "stretched res" game looks.
   The stream never restarts, so a clip can span a switch.
 
 ### Encoder abstraction

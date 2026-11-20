@@ -71,19 +71,13 @@ fn texture(
     tex.context("CreateTexture2D returned null")
 }
 
-/// Largest rectangle with the input's aspect ratio that fits in the output,
-/// centered (letterbox/pillarbox). Even coordinates keep NV12 chroma aligned.
-pub fn letterbox(in_w: u32, in_h: u32, out_w: u32, out_h: u32) -> RECT {
-    let (iw, ih, ow, oh) = (in_w as u64, in_h as u64, out_w as u64, out_h as u64);
-    let (w, h) = if iw * oh > ih * ow {
-        (ow, (ih * ow / iw).max(2))
-    } else {
-        ((iw * oh / ih).max(2), oh)
-    };
-    let (w, h) = ((w as i32) & !1, (h as i32) & !1);
-    let x = ((out_w as i32 - w) / 2) & !1;
-    let y = ((out_h as i32 - h) / 2) & !1;
-    RECT { left: x, top: y, right: x + w, bottom: y + h }
+/// Where the captured picture goes in the output: all of it. Every source
+/// (a monitor or one app's window) is stretched to fill the clip frame, so a
+/// game at a custom resolution (e.g. 4:3 "stretched res") looks the way the
+/// player sees it, with no black bars. The output size is even (NV12), so
+/// the edges stay chroma-aligned.
+pub fn fill_rect(out_w: u32, out_h: u32) -> RECT {
+    RECT { left: 0, top: 0, right: out_w as i32, bottom: out_h as i32 }
 }
 
 impl Nv12Converter {
@@ -161,11 +155,11 @@ impl Nv12Converter {
             vc.VideoProcessorSetOutputColorSpace1(&processor, DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709);
             let src = RECT { left: 0, top: 0, right: in_w as i32, bottom: in_h as i32 };
             vc.VideoProcessorSetStreamSourceRect(&processor, 0, true, Some(&src));
-            let dst = letterbox(in_w, in_h, out_w, out_h);
+            let dst = fill_rect(out_w, out_h);
             vc.VideoProcessorSetStreamDestRect(&processor, 0, true, Some(&dst));
-            let target = RECT { left: 0, top: 0, right: out_w as i32, bottom: out_h as i32 };
-            vc.VideoProcessorSetOutputTargetRect(&processor, true, Some(&target));
-            // Letterbox bars are black.
+            vc.VideoProcessorSetOutputTargetRect(&processor, true, Some(&dst));
+            // Nothing should show around the picture any more; if a driver
+            // ever leaves an edge pixel uncovered, it's black.
             let black = D3D11_VIDEO_COLOR {
                 Anonymous: D3D11_VIDEO_COLOR_0 {
                     RGBA: D3D11_VIDEO_COLOR_RGBA { R: 0.0, G: 0.0, B: 0.0, A: 1.0 },
@@ -307,5 +301,20 @@ impl Nv12Converter {
             height: self.in_h,
             data,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fill_rect;
+
+    #[test]
+    fn every_source_fills_the_whole_clip_frame() {
+        // Whatever the captured size (4:3 stretched res, a tall window, a
+        // 5:4 monitor), the picture covers the full output: no bars.
+        for (out_w, out_h) in [(1920, 1080), (1280, 720), (2560, 1440), (854, 480)] {
+            let r = fill_rect(out_w, out_h);
+            assert_eq!((r.left, r.top, r.right, r.bottom), (0, 0, out_w as i32, out_h as i32));
+        }
     }
 }

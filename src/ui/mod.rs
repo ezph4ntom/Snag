@@ -239,6 +239,9 @@ pub fn run(args: UiArgs) -> Result<()> {
                     }
                 }
             });
+            // Redraw when the core writes a new preview frame (only then).
+            let pctx = ctx.clone();
+            crate::capture::preview::watch(move || pctx.request_repaint());
 
             let mut trimmer = trimmer_tab::TrimmerTab::new(&settings);
             if let Some(clip) = &args.clip {
@@ -885,10 +888,21 @@ impl eframe::App for App {
             self.preview_on = want_preview;
             self.shared.outbox.push(UiToCore::Preview { on: want_preview });
             self.flush_outbox();
+            crate::capture::preview::WATCHING.store(want_preview, std::sync::atomic::Ordering::Relaxed);
         }
-        // Sound levels for the Sound tab and the Live tab's "Sound in clips".
+        // Sound levels: meters on the Sound tab (and search results), only
+        // the list of sources for the Live tab's "Sound in clips".
         let searching_sound = !self.search.trim().is_empty();
-        self.sound.set_visible((matches!(self.tab, Tab::Sound | Tab::Live) || searching_sound) && !minimized, ctx);
+        let sound_view = if minimized {
+            sound_tab::LevelView::Off
+        } else if self.tab == Tab::Sound || searching_sound {
+            sound_tab::LevelView::Meters
+        } else if self.tab == Tab::Live {
+            sound_tab::LevelView::ListOnly
+        } else {
+            sound_tab::LevelView::Off
+        };
+        self.sound.set_visible(sound_view, ctx);
         // Wake up for debounced saves and the theme/clip-list checks.
         ctx.request_repaint_after(Duration::from_millis(if self.shared.dirty_at.is_some() { 100 } else { 1000 }));
     }

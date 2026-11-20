@@ -11,7 +11,7 @@
 //! mixer shows), read by a background thread only while this tab is open.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -47,27 +47,65 @@ struct Snapshot {
     apps: Vec<AppLevel>,
 }
 
-struct Monitor {
-    snapshot: Arc<Mutex<Snapshot>>,
-    active: Arc<AtomicBool>,
-}
+impl Snapshot {
+    /// The same sources (names, default device, playing order)?
+    fn same_sources(&self, o: &Snapshot) -> bool {
+        let lv = |a: &[Level], b: &[Level]| {
+            a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.id == y.id && x.name == y.name && x.is_default == y.is_default)
+        };
+        lv(&self.outputs, &o.outputs)
+            && lv(&self.mics, &o.mics)
+            && self.apps.len() == o.apps.len()
+            && self
+                .apps
+                .iter()
+                .zip(&o.apps)
+                .all(|(x, y)| x.exe == y.exe && x.name == y.name && x.game == y.game && x.playing == y.playing)
+    }
 
-impl Monitor {
-    fn start(ctx: egui::Context) -> Monitor {
-        let snapshot = Arc::new(Mutex::new(Snapshot::default()));
-        let active = Arc::new(AtomicBool::new(true));
-        let (snap, act) = (snapshot.clone(), active.clone());
-        std::thread::Builder::new()
-            .name("sound-levels".into())
-            .spawn(move || monitor_main(snap, act, ctx))
-            .ok();
-        Monitor { snapshot, active }
+    /// Meters that moved visibly (same sources assumed).
+    fn levels_moved(&self, o: &Snapshot) -> bool {
+        let moved = |a: f32, b: f32| (a - b).abs() > 0.004;
+        self.outputs.iter().chain(&self.mics).zip(o.outputs.iter().chain(&o.mics)).any(|(x, y)| moved(x.peak, y.peak))
+            || self.apps.iter().zip(&o.apps).any(|(x, y)| moved(x.peak, y.peak))
     }
 }
 
-/// Re-lists devices and apps every second and reads their meters 20 times
-/// a second, while the tab is visible.
-fn monitor_main(out: Arc<Mutex<Snapshot>>, active: Arc<AtomicBool>, ctx: egui::Context) {
+/// What the level reader keeps up to date (it redraws the window only when
+/// that changes).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LevelView {
+    Off = 0,
+    /// The Live tab's "Sound in clips": which sources there are, no meters.
+    ListOnly = 1,
+    /// The Sound tab: the sources and their live meters.
+    Meters = 2,
+}
+
+struct Monitor {
+    snapshot: Arc<Mutex<Snapshot>>,
+    view: Arc<AtomicU8>,
+}
+
+impl Monitor {
+    fn start(ctx: egui::Context, view: LevelView) -> Monitor {
+        let snapshot = Arc::new(Mutex::new(Snapshot::default()));
+        let view = Arc::new(AtomicU8::new(view as u8));
+        let (snap, v) = (snapshot.clone(), view.clone());
+        std::thread::Builder::new()
+            .name("sound-levels".into())
+            .spawn(move || monitor_main(snap, v, ctx))
+            .ok();
+        Monitor { snapshot, view }
+    }
+}
+
+/// While a tab shows sound sources: re-lists devices and apps every second,
+/// and reads their meters (20 times a second for the Sound tab's meters, 4
+/// for the Live tab, which only needs to know what's playing). The window is
+/// redrawn only when something it shows changed: a silent Sound tab or the
+/// Live tab costs no redraws.
+fn monitor_main(out: Arc<Mutex<Snapshot>>, view: Arc<AtomicU8>, ctx: egui::Context) {
     use windows::Win32::Media::Audio::Endpoints::IAudioMeterInformation;
     // SAFETY: COM for this thread (the meter objects live here only).
     unsafe {
@@ -80,12 +118,19 @@ fn monitor_main(out: Arc<Mutex<Snapshot>>, active: Arc<AtomicBool>, ctx: egui::C
     let mut names: HashMap<u32, (String, String, bool)> = HashMap::new(); // pid -> exe, name, game
     let mut last_list: Option<Instant> = None;
     let decay = |old: f32, new: f32| new.max(old * 0.8);
+    // What the window was last woken up for.
+    let mut shown: Option<Snapshot> = None;
     loop {
-        if !active.load(Ordering::Relaxed) {
-            std::thread::sleep(Duration::from_millis(200));
-            last_list = None;
-            continue;
-        }
+        let meters = match view.load(Ordering::Relaxed) {
+            v if v == LevelView::Meters as u8 => true,
+            v if v == LevelView::ListOnly as u8 => false,
+            _ => {
+                std::thread::sleep(Duration::from_millis(200));
+                last_list = None;
+                shown = None;
+                continue;
+            }
+        };
         if last_list.is_none_or(|t| t.elapsed() >= Duration::from_secs(1)) {
             last_list = Some(Instant::now());
             let lv = |d: devices::RenderDevice| {
@@ -140,11 +185,18 @@ fn monitor_main(out: Arc<Mutex<Snapshot>>, active: Arc<AtomicBool>, ctx: egui::C
             }
             snap.apps.push(a.clone());
         }
+        let changed = match &shown {
+            None => true,
+            Some(s) => !snap.same_sources(s) || (meters && snap.levels_moved(s)),
+        };
         if let Ok(mut g) = out.lock() {
-            *g = snap;
+            *g = snap.clone();
         }
-        ctx.request_repaint();
-        std::thread::sleep(Duration::from_millis(50));
+        if changed {
+            shown = Some(snap);
+            ctx.request_repaint();
+        }
+        std::thread::sleep(Duration::from_millis(if meters { 50 } else { 250 }));
     }
 }
 
@@ -184,13 +236,13 @@ fn split_name(name: &str) -> (&str, &str) {
 }
 
 impl SoundTab {
-    /// Called every frame with whether a tab that shows sound levels is
-    /// visible, so the level reader only runs while it's needed.
-    pub fn set_visible(&mut self, visible: bool, ctx: &egui::Context) {
-        match (&self.monitor, visible) {
-            (None, true) => self.monitor = Some(Monitor::start(ctx.clone())),
-            (Some(m), v) => m.active.store(v, Ordering::Relaxed),
-            _ => {}
+    /// Called every frame with what the visible tab shows of the sound
+    /// sources, so the level reader only runs (and redraws) as needed.
+    pub fn set_visible(&mut self, view: LevelView, ctx: &egui::Context) {
+        match &self.monitor {
+            None if view != LevelView::Off => self.monitor = Some(Monitor::start(ctx.clone(), view)),
+            Some(m) => m.view.store(view as u8, Ordering::Relaxed),
+            None => {}
         }
     }
 
