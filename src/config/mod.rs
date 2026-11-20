@@ -82,11 +82,22 @@ pub struct UiSettings {
     pub badge_minutes: bool,
     /// Ask GitHub for new versions and offer them in the title bar.
     pub check_updates: bool,
+    /// The version whose "What's new" was last seen (set on a fresh
+    /// install's first launch); empty: updated from before 0.7.3.
+    pub last_seen_version: String,
 }
 
 impl Default for UiSettings {
     fn default() -> Self {
-        Self { scale: 1.0, tab_dock: TabDock::Top, icon_tabs: false, live_preview: true, badge_minutes: false, check_updates: true }
+        Self {
+            scale: 1.0,
+            tab_dock: TabDock::Top,
+            icon_tabs: false,
+            live_preview: true,
+            badge_minutes: false,
+            check_updates: true,
+            last_seen_version: String::new(),
+        }
     }
 }
 

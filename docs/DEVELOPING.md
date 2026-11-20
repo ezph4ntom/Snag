@@ -245,6 +245,7 @@ ffmpeg details that matter (all measured; see comments in `src/encode/ffmpeg.rs`
 | `trimmer/`, `ui/trimmer_tab.rs` | probe, preview decoder, fast/precise export; trimmer UI | 4 trimmer |
 | `library.rs`, `ui/library_tab.rs` | clip library (favorites, collections, upload records in `library.json`), cards, thumbnails, delete to the Recycle Bin, Uploads list, Streamable login | library |
 | `update.rs`, `ui/about.rs` | GitHub release check, installer download + SHA-256 check, silent install; Settings → About (version, build commit from `build.rs`, links) | updates |
+| `ui/whats_new.rs` | "What's new" dialog the first time the window opens after an update (built-in notes per version, `settings.ui.last_seen_version`; a fresh install marks its version as seen); also Settings → About → What's new. **Every release adds its notes at the top of `HISTORY`** (a unit test fails until the current version has some) | updates |
 | `upload/` | Streamable web-flow uploader, Litterbox, multipart HTTP over Windows TLS, Credential Manager | uploads |
 | `ui/search.rs` | the settings search (keywords and synonyms per section) | settings |
 | `themes/`, `ui/appearance_tab.rs` | JSON themes, egui styling, hot reload; the theme picker in Settings → Appearance | 5 themes |

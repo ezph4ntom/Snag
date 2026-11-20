@@ -202,6 +202,10 @@ impl Controller {
                 log::info!("auto-tune: {} ({:?}). Recommended because: {}", preset.label(), plan, rec.why.join(" "));
             }
             self.settings.hardware = Some(hw);
+            if self.first_launch {
+                // A fresh install has nothing "new" to show (see ui::whats_new).
+                self.settings.ui.last_seen_version = crate::update::current().to_string();
+            }
             self.save_settings();
         }
         // The configured encoder may have disappeared (GPU swap, driver update).

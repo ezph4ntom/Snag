@@ -17,6 +17,7 @@ mod search;
 mod settings_tab;
 mod sound_tab;
 mod trimmer_tab;
+mod whats_new;
 mod widgets;
 
 use std::io::{BufRead, Write};
@@ -139,6 +140,8 @@ struct App {
     updater: crate::update::Updater,
     /// Settings > About.
     about: about::About,
+    /// "What's new" after an update (and from About).
+    whats_new: whats_new::WhatsNew,
     /// Closing was asked while uploads run: confirm first.
     confirm_close: bool,
     close_anyway: bool,
@@ -179,6 +182,8 @@ pub fn run(args: UiArgs) -> Result<()> {
     let pretend_version = args.pretend_version.clone();
     let open_appearance = matches!(args.tab.as_deref(), Some("appearance" | "themes"));
     let open_about = args.tab.as_deref() == Some("about");
+    // First window after an update: what's new since the last version seen.
+    let whats_new = whats_new::WhatsNew::after_update(&settings.ui.last_seen_version);
     // Themes were renamed (v0.5): a theme that no longer exists becomes the
     // default, Daylight.
     let theme_now = crate::themes::existing_or_default(&settings.theme);
@@ -301,6 +306,7 @@ pub fn run(args: UiArgs) -> Result<()> {
                 close_anyway: false,
                 updater: crate::update::Updater::new(pretend_version),
                 about: about::About::default(),
+                whats_new,
             }))
         }),
     )
@@ -675,7 +681,7 @@ impl App {
                 ui.add_space(2.0);
                 match h.hit {
                     search::Hit::Settings(settings_tab::SettingsSection::Uploads) => self.library.settings_section(ui, &mut self.shared),
-                    search::Hit::Settings(settings_tab::SettingsSection::About) => self.about.section(ui, &self.shared, &mut self.updater),
+                    search::Hit::Settings(settings_tab::SettingsSection::About) => self.about.section(ui, &self.shared, &mut self.updater, &mut self.whats_new),
                     search::Hit::Settings(s) => self.settings_tab.section_ui(s, ui, &mut self.shared),
                     search::Hit::SoundRecording => self.sound.recording_section(ui, &mut self.shared),
                     search::Hit::SoundSources => self.sound.sources_section(ui, &mut self.shared),
@@ -720,8 +726,6 @@ impl App {
         });
     }
 
-    /// "Update to 0.7.0" left of the search box, while a newer release is
-    /// out. Returns true when clicked.
     /// The update button's text, `None` when there's no button.
     fn update_text(phase: &crate::update::Phase, version: &str) -> Option<String> {
         use crate::update::Phase;
@@ -734,8 +738,9 @@ impl App {
         }
     }
 
-    /// `compact`: only the icon (a narrow window); the text moves to the
-    /// hover tip.
+    /// "Update to 0.7.0" left of the search box, while a newer release is
+    /// out. Returns true when clicked. `compact`: only the icon (a narrow
+    /// window); the text moves to the hover tip.
     fn update_button(
         ui: &mut egui::Ui,
         theme: &crate::themes::Theme,
@@ -1039,11 +1044,12 @@ impl eframe::App for App {
                     let appearance = &mut self.appearance;
                     let about = &mut self.about;
                     let updater = &mut self.updater;
+                    let whats_new = &mut self.whats_new;
                     let theme_error = self.theme_error.as_deref();
                     self.settings_tab.ui(ui, &mut self.shared, &mut |which, ui, shared| match which {
                         settings_tab::SettingsSection::Uploads => library.settings_section(ui, shared),
                         settings_tab::SettingsSection::Theme => appearance.theme_section(ui, shared, theme_error),
-                        settings_tab::SettingsSection::About => about.section(ui, shared, updater),
+                        settings_tab::SettingsSection::About => about.section(ui, shared, updater, whats_new),
                         _ => {}
                     });
                 }
@@ -1063,6 +1069,13 @@ impl eframe::App for App {
             self.live.rescan();
         }
         self.close_dialog(&ctx);
+        if self.whats_new.dialog(&ctx, &self.shared) {
+            let now = crate::update::current();
+            if self.shared.settings.ui.last_seen_version != now {
+                self.shared.settings.ui.last_seen_version = now.to_string();
+                self.shared.mark_dirty();
+            }
+        }
         self.dock_preview(&ctx);
         self.draw_toast(&ctx);
         // A 1 px outline around the whole window (no Windows frame anymore).

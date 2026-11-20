@@ -19,13 +19,14 @@ pub struct About {
 #[derive(Clone, Copy)]
 enum Glyph {
     Refresh,
+    List,
     External,
     Folder,
 }
 
 impl About {
     /// Draws the section.
-    pub fn section(&mut self, ui: &mut egui::Ui, shared: &Shared, updater: &mut Updater) {
+    pub fn section(&mut self, ui: &mut egui::Ui, shared: &Shared, updater: &mut Updater, whats_new: &mut super::whats_new::WhatsNew) {
         let theme = shared.theme.clone();
         let c = theme.colors.clone();
         let icon = self
@@ -59,7 +60,10 @@ impl About {
                 if link_button(ui, shared, Glyph::Refresh, label, !checking && !updater.busy()).on_hover_text("Ask GitHub for a newer version now").clicked() {
                     updater.check_now();
                 }
-                if link_button(ui, shared, Glyph::External, "Release notes", true).on_hover_text("What's new in this version (GitHub)").clicked() {
+                if link_button(ui, shared, Glyph::List, "What's new", true).on_hover_text("What the latest versions added and fixed").clicked() {
+                    whats_new.show_recent();
+                }
+                if link_button(ui, shared, Glyph::External, "Release notes", true).on_hover_text("This version's release notes (GitHub)").clicked() {
                     crate::win::shell_open(&crate::update::release_notes_url());
                 }
                 if link_button(ui, shared, Glyph::External, "Source code", true).on_hover_text(crate::update::source_url()).clicked() {
@@ -137,6 +141,13 @@ fn paint_glyph(p: &egui::Painter, c: egui::Pos2, glyph: Glyph, color: Color32) {
                 tip - vec2(dir.x * cs - dir.y * sn, dir.x * sn + dir.y * cs) * 3.6
             };
             p.add(egui::Shape::line(vec![back(40.0), tip, back(-40.0)], s));
+        }
+        Glyph::List => {
+            // Three dots, each with a line: a bullet list.
+            for dy in [-4.0, 0.0, 4.0] {
+                p.circle_filled(c + vec2(-5.0, dy), 1.2, color);
+                p.line_segment([c + vec2(-2.0, dy), c + vec2(6.0, dy)], s);
+            }
         }
         Glyph::External => {
             // A box open at the top right, with an arrow leaving it.
