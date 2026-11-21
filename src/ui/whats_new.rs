@@ -26,29 +26,28 @@ pub struct Notes {
 /// Newest first. The top entry must be the current version (tested).
 pub const HISTORY: &[Notes] = &[
     Notes {
+        version: "0.7.4",
+        new: &[],
+        fixed: &["Shorter notes here, and \"Got it\" is centered."],
+    },
+    Notes {
         version: "0.7.3",
-        new: &["A \"What's new\" screen like this one: the first time you open Snag after an update, it shows what was added and fixed. You can open it again in Settings > About."],
+        new: &["This \"What's new\" screen after each update (also in Settings > About)."],
         fixed: &[],
     },
     Notes {
         version: "0.7.2",
-        new: &["Clips fill the whole frame: a game at a custom resolution (like FiveM in 4:3 \"stretched res\") is stretched the way it looks on your screen, with no black bars."],
-        fixed: &[
-            "\"Only one app\" no longer freezes on the last frame when the game quits or stops responding: clips go black and the Live tab says \"Waiting for...\" until it's back.",
-            "Lighter on your CPU: the Live and Sound tabs only redraw when something changes, and the live preview costs less.",
-        ],
+        new: &["Clips fill the frame: stretched resolutions (like FiveM 4:3) get no black bars."],
+        fixed: &["\"Only one app\" no longer freezes when the game quits.", "The Live and Sound tabs use less CPU."],
     },
     Notes {
         version: "0.7.1",
         new: &[],
-        fixed: &["The window fits at every size: nothing runs off the edge or overlaps when it isn't fullscreen (Live tab, title bar, Sound, Quality, Settings, Uploads)."],
+        fixed: &["The window fits at every size."],
     },
     Notes {
         version: "0.7.0",
-        new: &[
-            "Sources (Live tab): record only one app or game, so Alt-Tab never ends up in your clips.",
-            "Delete clips in the Clips tab (right-click > Delete, or the Delete key). They go to the Recycle Bin.",
-        ],
+        new: &["Sources: record only one app or game.", "Delete clips (to the Recycle Bin)."],
         fixed: &[],
     },
 ];
@@ -128,8 +127,10 @@ impl WhatsNew {
                 }
             });
             ui.add_space(12.0);
-            let b = egui::Button::new(RichText::new("Got it").color(c.accent_text.0)).fill(c.accent.0).min_size(vec2(90.0, 30.0));
-            if ui.add(b).clicked() {
+            // add_sized: a centered layout, so the text sits in the middle of
+            // the button (egui aligns button text like the surrounding layout).
+            let b = egui::Button::new(RichText::new("Got it").color(c.accent_text.0)).fill(c.accent.0);
+            if ui.add_sized(vec2(90.0, 30.0), b).clicked() {
                 close = true;
             }
         });

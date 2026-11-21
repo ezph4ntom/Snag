@@ -2857,7 +2857,7 @@ dependencies = [
 
 [[package]]
 name = "snag"
-version = "0.7.3"
+version = "0.7.4"
 dependencies = [
  "anyhow",
  "eframe",
