@@ -155,7 +155,8 @@ struct App {
     /// The header logo, drawn in the theme's text and accent colors.
     logo: Option<(egui::TextureHandle, (Color32, Color32))>,
     /// Whether the core is currently sending preview frames.
-    preview_on: bool,
+    /// What the core was last told about the preview: (wanted, smooth, width).
+    preview_sent: (bool, bool, u32),
     /// Tab bar being dragged: the edge it would dock to.
     dock_target: Option<crate::config::TabDock>,
     /// Icons-only side bar: open (showing names) while hovered.
@@ -287,7 +288,7 @@ pub fn run(args: UiArgs) -> Result<()> {
                 appearance: appearance_tab::AppearanceTab::default(),
                 minimize_pending: if minimized { hwnd } else { None },
                 logo: None,
-                preview_on: false,
+                preview_sent: (false, false, 0),
                 dock_target: None,
                 tab_bar_size: egui::vec2(160.0, 44.0),
                 bar_open: false,
@@ -889,11 +890,14 @@ impl eframe::App for App {
         // Preview frames only while the Live tab is on screen.
         let minimized = ctx.input(|i| i.viewport().minimized.unwrap_or(false));
         let want_preview = self.tab == Tab::Live && self.shared.settings.ui.live_preview && !minimized && self.connected;
-        if want_preview != self.preview_on {
-            self.preview_on = want_preview;
-            self.shared.outbox.push(UiToCore::Preview { on: want_preview });
+        let preview = (want_preview, self.shared.settings.ui.live_preview_smooth, self.live.shown_width());
+        if preview != self.preview_sent {
+            self.preview_sent = preview;
+            let (on, smooth, width) = preview;
+            self.shared.outbox.push(UiToCore::Preview { on, smooth, width });
             self.flush_outbox();
             crate::capture::preview::WATCHING.store(want_preview, std::sync::atomic::Ordering::Relaxed);
+            crate::capture::preview::WATCH_FAST.store(smooth, std::sync::atomic::Ordering::Relaxed);
         }
         // Sound levels: meters on the Sound tab (and search results), only
         // the list of sources for the Live tab's "Sound in clips".

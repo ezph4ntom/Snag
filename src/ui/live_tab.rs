@@ -33,6 +33,9 @@ pub struct LiveTab {
     block: Option<(f32, f32, f32)>,
     /// The right column's own height (its cards without stretching).
     side_h: f32,
+    /// How wide the preview is on screen, in pixels (what the core shrinks
+    /// its frames to; see `shown_width`).
+    shown_w: u32,
     /// The "Record one app" picker is open, with the windows listed when
     /// it opened (only listed then, and on Refresh).
     picker: Option<Vec<AppWindow>>,
@@ -42,10 +45,10 @@ impl LiveTab {
     pub fn ui(&mut self, ui: &mut egui::Ui, shared: &mut Shared, sound: &mut super::sound_tab::SoundTab) {
         let preview_on = shared.settings.ui.live_preview;
         if preview_on {
-            if let Some((w, h, rgba)) = self.reader.next_frame() {
-                // Opaque frames: "premultiplied" is the same picture without
-                // a per-pixel alpha check.
-                let image = egui::ColorImage::from_rgba_premultiplied([w as usize, h as usize], &rgba);
+            // Opaque frames: "premultiplied" is the same picture without a
+            // per-pixel alpha check; built straight from the shared block.
+            let next = self.reader.next_frame_with(|w, h, px| (w, h, egui::ColorImage::from_rgba_premultiplied([w as usize, h as usize], px)));
+            if let Some((w, h, image)) = next {
                 match &mut self.texture {
                     Some(t) => t.set(image, TextureOptions::LINEAR),
                     None => self.texture = Some(ui.ctx().load_texture("live-preview", image, TextureOptions::LINEAR)),
@@ -94,6 +97,12 @@ impl LiveTab {
             });
         });
         self.picker_dialog(ui.ctx(), shared);
+    }
+
+    /// How wide the preview is shown, in pixels, rounded to 16 (so
+    /// dragging its size doesn't send a message for every pixel).
+    pub fn shown_width(&self) -> u32 {
+        (self.shown_w + 8) / 16 * 16
     }
 
     /// What is recorded: follow focus, one monitor, or only one app.
@@ -252,6 +261,7 @@ impl LiveTab {
         let (row, _) = ui.allocate_exact_size(vec2(w, BAR_H + box_size.y), Sense::hover());
         let bar = Rect::from_min_size(pos2(row.center().x - row_w / 2.0, row.top()), vec2(row_w, BAR_H));
         let rect = Rect::from_center_size(pos2(row.center().x, bar.bottom() + box_size.y / 2.0), box_size);
+        self.shown_w = (rect.width() * ui.ctx().pixels_per_point()).round() as u32;
         let r = (shared.theme.corner_radius * 1.5) as u8;
         let bar_radius = CornerRadius { nw: r, ne: r, sw: 0, se: 0 };
         ui.painter().rect_filled(bar, bar_radius, c.panel.0);
@@ -266,13 +276,26 @@ impl LiveTab {
         let menu = ui.interact(rect, egui::Id::unique("live-preview-menu"), Sense::click());
         menu.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, "Live preview"));
         let mut toggle = false;
+        let mut smooth = shared.settings.ui.live_preview_smooth;
         menu.context_menu(|ui| {
             let label = if shared.settings.ui.live_preview { "Hide preview" } else { "Show preview" };
             if ui.button(label).clicked() {
                 toggle = true;
                 ui.close();
             }
+            ui.separator();
+            // Measured (1080p, 736 px preview): about 12 % of one CPU core
+            // in all at 30 fps, 22 % at 60 (window + recorder), only while
+            // the preview is on screen.
+            ui.radio_value(&mut smooth, false, "Normal (30 fps)").on_hover_text("Light on the CPU");
+            ui.radio_value(&mut smooth, true, "Smooth (60 fps)").on_hover_text(
+                "As smooth as a 60 fps recording. About twice the CPU of Normal (around a tenth of one core more), only while the preview is showing.",
+            );
         });
+        if smooth != shared.settings.ui.live_preview_smooth {
+            shared.settings.ui.live_preview_smooth = smooth;
+            shared.mark_dirty();
+        }
         if toggle {
             shared.settings.ui.live_preview = !shared.settings.ui.live_preview;
             shared.mark_dirty();

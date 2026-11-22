@@ -78,6 +78,9 @@ pub struct UiSettings {
     /// Show the live preview on the Live tab (off = no preview frames are
     /// made at all).
     pub live_preview: bool,
+    /// Live preview at 60 frames a second (else 30); right-click the
+    /// preview to change it.
+    pub live_preview_smooth: bool,
     /// The Live tab's preview size, as a share of the largest that fits
     /// (dragged from its corner; 1.0 = largest).
     pub live_preview_size: f32,
@@ -97,6 +100,7 @@ impl Default for UiSettings {
             tab_dock: TabDock::Top,
             icon_tabs: false,
             live_preview: true,
+            live_preview_smooth: false,
             live_preview_size: 1.0,
             badge_minutes: false,
             check_updates: true,

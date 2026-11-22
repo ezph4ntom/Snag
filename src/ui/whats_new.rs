@@ -26,6 +26,14 @@ pub struct Notes {
 /// Newest first. The top entry must be the current version (tested).
 pub const HISTORY: &[Notes] = &[
     Notes {
+        version: "0.7.11",
+        new: &["Live preview: right-click it to pick Normal (30 fps) or Smooth (60 fps)."],
+        fixed: &[
+            "Uploads keep your clip's file name as their title.",
+            "The live preview costs less when you make it small.",
+        ],
+    },
+    Notes {
         version: "0.7.10",
         new: &[],
         fixed: &["Live tab: the status sits in a slim bar on top of the preview instead of the corner."],

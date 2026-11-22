@@ -756,16 +756,10 @@ impl LibraryTab {
     }
 
     fn start_upload(&mut self, path: &Path, force: Option<Host>, shared: &Shared) {
-        let (title, seconds) = match self.clips.iter().find(|c| c.path == path) {
-            Some(c) => {
-                let mut t = self.title(c);
-                if c.kind.is_empty() || self.meta.get(&c.path).and_then(|m| m.title.as_ref()).is_some() {
-                    t = format!("{t} · {} {} {:02}:{:02}", c.when.day, MONTHS[(c.when.month - 1) as usize], c.when.hour, c.when.minute);
-                }
-                (t, self.seconds(c))
-            }
-            None => (path.file_stem().unwrap_or_default().to_string_lossy().into_owned(), None),
-        };
+        // Uploaded under the file's own name (what you renamed it to), not
+        // the game and time shown on the card.
+        let title = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+        let seconds = self.clips.iter().find(|c| c.path == path).and_then(|c| self.seconds(c));
         self.uploader.start(Request {
             path: path.to_path_buf(),
             title,

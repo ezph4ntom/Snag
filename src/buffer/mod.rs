@@ -407,7 +407,6 @@ fn pacer_main(
     log::info!("recording at {w}x{h} @ {} fps ({} after first frame wait)", cfg.fps, fmt_ms(warm_start.elapsed()));
 
     let mut tick: u64 = 0;
-    let preview_every = (cfg.fps as u64 / 30).max(1); // ~30 previews a second
     // Counts new frames; the preview only gets a frame it doesn't have yet
     // (a static screen or "waiting" black costs no preview work, and the
     // window isn't woken for the same picture).
@@ -478,11 +477,12 @@ fn pacer_main(
                 session.stats.frames_unchanged.fetch_add(1, Ordering::Relaxed);
             }
         }
-        // Live preview for the window (~30 fps, only while it's shown, and
-        // only frames it doesn't have yet).
+        // Live preview for the window (30 or 60 a second, see
+        // `preview::RATE`; only while it's shown, and only frames it doesn't
+        // have yet).
         if !crate::capture::preview::WANTED.load(Ordering::Relaxed) {
             previewed = None; // shown again later: send the current frame
-        } else if tick.is_multiple_of(preview_every) && previewed != Some(frame_no) && crate::capture::preview::offer(&last) {
+        } else if tick.is_multiple_of(crate::capture::preview::every(cfg.fps)) && previewed != Some(frame_no) && crate::capture::preview::offer(&last) {
             previewed = Some(frame_no);
         }
         if frame_tx.send(last.clone()).is_err() {

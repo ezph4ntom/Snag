@@ -35,6 +35,17 @@ const SIZE: usize = HEADER + (MAX_W * MAX_H * 4) as usize;
 
 /// Set by the controller while the window shows the preview.
 pub static WANTED: AtomicBool = AtomicBool::new(false);
+/// Previews a second the window asks for: 30 (Normal) or 60 (Smooth).
+pub static RATE: AtomicU32 = AtomicU32::new(30);
+/// How wide the window shows the preview, in pixels (0: not known yet).
+/// Frames are shrunk to about that size instead of always 960 px wide.
+pub static SHOWN_W: AtomicU32 = AtomicU32::new(0);
+
+/// Recorder ticks between two previews at `fps` (one per tick at 60 fps
+/// with Smooth, every other tick with Normal).
+pub fn every(fps: u32) -> u64 {
+    (fps as u64 / RATE.load(Ordering::Relaxed).max(1) as u64).max(1)
+}
 
 struct Mapping {
     handle: HANDLE,
@@ -83,7 +94,7 @@ pub fn offer(frame: &Arc<Nv12Frame>) -> bool {
                 let Some(map) = create(NAME) else { return };
                 let mut rgba = Vec::new();
                 for f in rx {
-                    let (w, h) = shrink_to_rgba(&f, &mut rgba);
+                    let (w, h) = shrink_to_rgba(&f, &mut rgba, SHOWN_W.load(Ordering::Relaxed));
                     drop(f); // give the buffer back to the recorder quickly
                     write(&map, w, h, &rgba);
                 }
@@ -129,14 +140,23 @@ fn write(map: &Mapping, w: u32, h: u32, rgba: &[u8]) {
     seq.store((s | 1).wrapping_add(1), Ordering::Release); // even: done
 }
 
+/// The whole-number step a frame is shrunk by: enough to fit MAX_W x MAX_H,
+/// and more while the preview is shown smaller (the smallest result that's
+/// still at least `shown_w` wide; 0 = not known).
+pub fn step_for(w: u32, h: u32, shown_w: u32) -> usize {
+    let fit = w.div_ceil(MAX_W).max(h.div_ceil(MAX_H)).max(1);
+    let shown = w.checked_div(shown_w).map_or(1, |s| s.clamp(1, 8));
+    fit.max(shown) as usize
+}
+
 /// Shrinks an NV12 frame (BT.709 limited range, what the GPU converter
-/// produces) to RGBA no wider than MAX_W, by a whole-number step. Each output
-/// pixel averages a 2x2 block of brightness samples (smooth edges, no
-/// shimmer), and the color math is integer-only: about 1.5 ms for 1080p ->
-/// 960x540. Only new frames are shrunk (see the pacer), so a static screen
-/// costs nothing.
-pub fn shrink_to_rgba(f: &Nv12Frame, out: &mut Vec<u8>) -> (u32, u32) {
-    let step = f.width.div_ceil(MAX_W).max(f.height.div_ceil(MAX_H)).max(1) as usize;
+/// produces) to RGBA no wider than MAX_W (and about `shown_w`), by a
+/// whole-number step. Each output pixel averages a 2x2 block of brightness
+/// samples (smooth edges, no shimmer), and the color math is integer-only:
+/// about 1.5 ms for 1080p -> 960x540. Only new frames are shrunk (see the
+/// pacer), so a static screen costs nothing.
+pub fn shrink_to_rgba(f: &Nv12Frame, out: &mut Vec<u8>, shown_w: u32) -> (u32, u32) {
+    let step = step_for(f.width, f.height, shown_w);
     if step == 2 {
         halve_to_rgba(f, out)
     } else {
@@ -207,6 +227,9 @@ fn shrink_any(f: &Nv12Frame, step: usize, out: &mut Vec<u8>) -> (u32, u32) {
 
 /// Set by the window while it shows the preview; `watch` only looks then.
 pub static WATCHING: AtomicBool = AtomicBool::new(false);
+/// Set by the window for the Smooth (60 fps) preview: `watch` looks every
+/// 4 ms instead of 15, so no frame waits for the next look.
+pub static WATCH_FAST: AtomicBool = AtomicBool::new(false);
 
 /// The core's block, read-only (None until the core created it).
 fn open(name: &str) -> Option<Mapping> {
@@ -241,7 +264,7 @@ fn watch_named(name: &'static str, on_new: impl Fn() + Send + 'static) {
                 std::thread::sleep(Duration::from_millis(200));
                 continue;
             }
-            std::thread::sleep(Duration::from_millis(15));
+            std::thread::sleep(Duration::from_millis(if WATCH_FAST.load(Ordering::Relaxed) { 4 } else { 15 }));
             let Some(m) = map.as_ref() else {
                 map = open(name);
                 if map.is_none() {
@@ -269,9 +292,11 @@ pub struct Reader {
 }
 
 impl Reader {
-    /// A new frame, if the core wrote one since the last call:
-    /// (width, height, rgba).
-    pub fn next_frame(&mut self) -> Option<(u32, u32, Vec<u8>)> {
+    /// A new frame, if the core wrote one since the last call: hands
+    /// (width, height, rgba) to `make` straight from the shared block (the
+    /// window turns them into its image with a single copy). What `make`
+    /// returns is dropped if the core overwrote the frame meanwhile.
+    pub fn next_frame_with<T>(&mut self, make: impl FnOnce(u32, u32, &[u8]) -> T) -> Option<T> {
         if self.map.is_none() {
             self.map = open(NAME);
         }
@@ -281,27 +306,49 @@ impl Reader {
         if before & 1 == 1 || before == self.last_seq {
             return None;
         }
-        // SAFETY: header and pixels are within SIZE; sizes are clamped.
-        let (w, h, px) = unsafe {
+        // SAFETY: header and pixels are within SIZE (sizes are clamped).
+        // The writer is another process; if it rewrote the block while we
+        // read (a torn frame), the sequence number below shows it and the
+        // result is thrown away (the seqlock protocol).
+        let (w, h, out) = unsafe {
             let p = map.ptr();
             let w = std::ptr::read_unaligned(p.add(4) as *const u32).min(MAX_W);
             let h = std::ptr::read_unaligned(p.add(8) as *const u32).min(MAX_H);
-            let mut px = vec![0u8; (w * h * 4) as usize];
-            std::ptr::copy_nonoverlapping(p.add(HEADER), px.as_mut_ptr(), px.len());
-            (w, h, px)
+            let px = std::slice::from_raw_parts(p.add(HEADER), (w * h * 4) as usize);
+            (w, h, make(w, h, px))
         };
         std::sync::atomic::fence(Ordering::Acquire);
         if seq.load(Ordering::Acquire) != before || w == 0 || h == 0 {
             return None; // overwritten while copying; take the next one
         }
         self.last_seq = before;
-        Some((w, h, px))
+        Some(out)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn previews_shrink_to_about_the_size_they_are_shown() {
+        // Not known yet, or shown big: half size for 1080p (fits 960x600).
+        assert_eq!(step_for(1920, 1080, 0), 2);
+        assert_eq!(step_for(1920, 1080, 1300), 2);
+        // A 730 px wide preview still gets 960 (the smallest that's wider).
+        assert_eq!(step_for(1920, 1080, 730), 2);
+        // Dragged small: a quarter (480 wide) is enough for 400 px.
+        assert_eq!(step_for(1920, 1080, 400), 4);
+        // 4K always needs at least a quarter; never more than an eighth.
+        assert_eq!(step_for(3840, 2160, 0), 4);
+        assert_eq!(step_for(3840, 2160, 100), 8);
+        // Normal = 30 a second: every other frame at 60 fps.
+        RATE.store(30, Ordering::Relaxed);
+        assert_eq!((every(60), every(30)), (2, 1));
+        RATE.store(60, Ordering::Relaxed);
+        assert_eq!((every(60), every(30), every(144)), (1, 1, 2));
+        RATE.store(30, Ordering::Relaxed);
+    }
 
     #[test]
     fn shrinks_and_converts() {
@@ -317,7 +364,7 @@ mod tests {
             *v = 128;
         }
         let mut out = Vec::new();
-        assert_eq!(shrink_to_rgba(&f, &mut out), (960, 540));
+        assert_eq!(shrink_to_rgba(&f, &mut out, 0), (960, 540));
         assert_eq!(&out[..4], &[255, 255, 255, 255]);
         let last = out.len() - 4;
         assert_eq!(&out[last..], &[0, 0, 0, 255]);
@@ -346,7 +393,7 @@ mod tests {
         let mut out = Vec::new();
         let t = std::time::Instant::now();
         for _ in 0..200 {
-            shrink_to_rgba(&f, &mut out);
+            shrink_to_rgba(&f, &mut out, 0);
         }
         println!("shrink_to_rgba 1080p -> 960x540: {:.2} ms per frame", t.elapsed().as_secs_f64() * 1000.0 / 200.0);
     }

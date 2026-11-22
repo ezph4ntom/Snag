@@ -386,8 +386,11 @@ impl Controller {
                     self.audio_selection.set(audio);
                 }
             }
-            Event::FromUi(UiToCore::Preview { on }) => {
-                crate::capture::preview::WANTED.store(on, Ordering::Relaxed);
+            Event::FromUi(UiToCore::Preview { on, smooth, width }) => {
+                use crate::capture::preview::{RATE, SHOWN_W, WANTED};
+                RATE.store(if smooth { 60 } else { 30 }, Ordering::Relaxed);
+                SHOWN_W.store(width, Ordering::Relaxed);
+                WANTED.store(on, Ordering::Relaxed);
             }
         }
     }

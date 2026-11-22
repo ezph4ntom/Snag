@@ -89,8 +89,16 @@ pub enum UiToCore {
     RestartAsAdmin,
     /// The record button: start/stop (manual mode) or save the session.
     Record,
-    /// Start/stop sending live preview frames (Live tab shown or not).
-    Preview { on: bool },
+    /// Start/stop sending live preview frames (Live tab shown or not), how
+    /// many a second (`smooth`: 60, else 30) and how wide the window shows
+    /// them (pixels; 0 = not known).
+    Preview {
+        on: bool,
+        #[serde(default)]
+        smooth: bool,
+        #[serde(default)]
+        width: u32,
+    },
     /// The Sound choices while a fader is dragged: applied to the recording
     /// right away (settings.json is saved once the drag ends).
     LiveAudio { audio: crate::config::AudioSettings },
