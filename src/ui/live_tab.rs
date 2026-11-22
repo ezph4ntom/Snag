@@ -1,8 +1,8 @@
 //! Live tab: what's being recorded right now, and the main buttons.
 //!
 //! Left: status with the replay buffer's on/off switch, the live preview
-//! (switchable off: then no preview frames are made at all; resizable from
-//! its corner) and three tiles (Save clip / Screenshot / Record), all sized
+//! (right-click to hide it: then no preview frames are made at all;
+//! resizable from its corner) and three tiles (Save clip / Screenshot / Record), all sized
 //! in proportion to the window. Right: "Sources" (what is recorded: a
 //! monitor, or only one app) and "Sound in clips" (quick volume sliders).
 //!
@@ -221,9 +221,8 @@ impl LiveTab {
         let theme = shared.theme.clone();
         let recording = status.as_ref().is_some_and(|s| s.recording);
 
-        // Status line: the pill and the buffer switch; "Hide preview" keeps
-        // its own room on the right; the dropped count always shows in
-        // full; the "what's recorded" text gets the rest, cut with "…".
+        // Status line: the pill, the buffer switch and what's recorded
+        // (right-click the preview to hide it).
         ui.horizontal(|ui| {
             match &status {
                 Some(s) if s.rec_active => {
@@ -257,29 +256,21 @@ impl LiveTab {
                 };
                 (format!("{monitor} · {} · {} fps", s.resolution, s.fps), s.frames_dropped)
             });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let label = if shared.settings.ui.live_preview { "Hide preview" } else { "Show preview" };
-                if ui.add(egui::Button::new(RichText::new(label).color(c.text_dim.0)).frame(false)).clicked() {
-                    shared.settings.ui.live_preview = !shared.settings.ui.live_preview;
-                    shared.mark_dirty();
-                }
-                let Some((text, dropped)) = info else { return };
-                // The space between the switch and "Hide preview", left to right.
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    let dropped = (dropped > 0).then(|| RichText::new(format!("{dropped} dropped")).color(c.warning.0));
-                    let dropped_w = dropped.as_ref().map_or(0.0, |d| {
-                        super::widgets::text_width(ui, d.clone(), egui::TextStyle::Body) + ui.spacing().item_spacing.x
-                    });
-                    let room = (ui.available_width() - dropped_w).max(0.0);
-                    let row_h = ui.available_height();
-                    ui.allocate_ui_with_layout(vec2(room, row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                        ui.add(egui::Label::new(dim(shared, text)).truncate());
-                    });
-                    if let Some(d) = dropped {
-                        ui.label(d).on_hover_text("Frames the recorder couldn't produce on time (see core.log)");
-                    }
-                });
+            let Some((text, dropped)) = info else { return };
+            // The rest of the row: the dropped count in full, the text cut
+            // with "…" to what's left.
+            let dropped = (dropped > 0).then(|| RichText::new(format!("{dropped} dropped")).color(c.warning.0));
+            let dropped_w = dropped.as_ref().map_or(0.0, |d| {
+                super::widgets::text_width(ui, d.clone(), egui::TextStyle::Body) + ui.spacing().item_spacing.x
             });
+            let room = (ui.available_width() - dropped_w).max(0.0);
+            let row_h = ui.available_height();
+            ui.allocate_ui_with_layout(vec2(room, row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.add(egui::Label::new(dim(shared, text)).truncate());
+            });
+            if let Some(d) = dropped {
+                ui.label(d).on_hover_text("Frames the recorder couldn't produce on time (see core.log)");
+            }
         });
         ui.add_space(12.0);
 
@@ -311,6 +302,23 @@ impl LiveTab {
         // around it that could look like part of the clip).
         let (row, _) = ui.allocate_exact_size(vec2(w, box_size.y), Sense::hover());
         let rect = Rect::from_center_size(row.center(), box_size);
+        // Right-click the preview to hide it (or show it again). Added
+        // before what's drawn on it, so "Enable preview" and the resize grip
+        // stay on top and keep their clicks.
+        let menu = ui.interact(rect, egui::Id::unique("live-preview-menu"), Sense::click());
+        menu.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, "Live preview"));
+        let mut toggle = false;
+        menu.context_menu(|ui| {
+            let label = if shared.settings.ui.live_preview { "Hide preview" } else { "Show preview" };
+            if ui.button(label).clicked() {
+                toggle = true;
+                ui.close();
+            }
+        });
+        if toggle {
+            shared.settings.ui.live_preview = !shared.settings.ui.live_preview;
+            shared.mark_dirty();
+        }
         let radius = CornerRadius::same((shared.theme.corner_radius * 1.5) as u8);
         ui.painter().rect_filled(rect, radius, c.preview.0);
         if !shared.settings.ui.live_preview {

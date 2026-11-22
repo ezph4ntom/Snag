@@ -1,6 +1,7 @@
 //! "What's new": the first time the window opens after an update, a short
 //! list of what was added and fixed (for every version since the last one
-//! the user saw, up to five). Settings > About opens it again.
+//! the user saw: after skipping a few updates, all of them). Settings >
+//! About opens it again.
 //!
 //! The notes are built in (they work offline and always match the version).
 //! When releasing, add the new version's entry at the top of `HISTORY`: a
@@ -8,9 +9,8 @@
 //!
 //! The last version seen is `settings.ui.last_seen_version`. A fresh install
 //! records its own version there on first launch (the core does it), so the
-//! dialog only ever shows after an update. Empty means "updated from a
-//! version older than this feature": then only the current version's notes
-//! are shown.
+//! dialog only ever shows after an update. Empty means "updated from 0.7.2
+//! or older" (before this was recorded): then every version since 0.7.2.
 
 use eframe::egui::{self, RichText, Sense, vec2};
 
@@ -25,6 +25,11 @@ pub struct Notes {
 
 /// Newest first. The top entry must be the current version (tested).
 pub const HISTORY: &[Notes] = &[
+    Notes {
+        version: "0.7.9",
+        new: &["Right-click the live preview to hide it (the \"Hide preview\" link is gone)."],
+        fixed: &["Skipped a few updates? This screen now shows everything since your old version."],
+    },
     Notes {
         version: "0.7.8",
         new: &[],
@@ -83,24 +88,32 @@ pub const HISTORY: &[Notes] = &[
     },
 ];
 
-/// At most this many versions in one dialog.
-const MAX_VERSIONS: usize = 5;
+/// The last version without `last_seen_version` (added in 0.7.3): an
+/// empty one means the update came from this version or older.
+const BEFORE_TRACKING: &str = "0.7.2";
 
 /// The notes to show for someone who last saw `last_seen` and now runs
-/// `current`, newest first. Nothing when `last_seen` is `current` or newer;
-/// only `current`'s notes when `last_seen` is empty or unreadable.
+/// `current`, newest first: every version since the one last seen (a jump
+/// of several versions shows them all). Nothing when `last_seen` is
+/// `current` or newer. Empty or unreadable: everything since 0.7.2, the
+/// last version that didn't record it.
 pub fn to_show(last_seen: &str, current: &str) -> Vec<&'static Notes> {
-    use crate::update::{is_newer, parse_version};
+    use crate::update::parse_version;
     let Some(now) = parse_version(current) else { return Vec::new() };
     match parse_version(last_seen) {
         Some(seen) if seen >= now => Vec::new(),
-        Some(_) => HISTORY
-            .iter()
-            .filter(|n| is_newer(n.version, last_seen) && !is_newer(n.version, current))
-            .take(MAX_VERSIONS)
-            .collect(),
-        None => HISTORY.iter().filter(|n| parse_version(n.version) == Some(now)).collect(),
+        Some(_) => since(last_seen, current),
+        None => {
+            let all = since(BEFORE_TRACKING, current);
+            if all.is_empty() { HISTORY.iter().filter(|n| parse_version(n.version) == Some(now)).collect() } else { all }
+        }
     }
+}
+
+/// The versions after `seen`, up to `current`, newest first.
+fn since(seen: &str, current: &str) -> Vec<&'static Notes> {
+    use crate::update::is_newer;
+    HISTORY.iter().filter(|n| is_newer(n.version, seen) && !is_newer(n.version, current)).collect()
 }
 
 /// The dialog. `open` holds the notes while it's shown.
@@ -214,9 +227,17 @@ mod tests {
         // Already seen, or a downgrade: nothing.
         assert!(to_show("0.7.2", "0.7.2").is_empty());
         assert!(to_show("0.9.0", "0.7.2").is_empty());
-        // Updated from before this feature (or unreadable): this version only.
+        // Several updates skipped: every one of them, however many.
+        let all = ["0.7.9", "0.7.8", "0.7.7", "0.7.6", "0.7.5", "0.7.4", "0.7.3"];
+        assert_eq!(versions(to_show("0.7.2", "0.7.9")), all);
+        // Updated from 0.7.2 or older (nothing recorded yet), or unreadable:
+        // everything since 0.7.2.
+        assert_eq!(versions(to_show("", "0.7.9")), all);
+        assert_eq!(versions(to_show("garbage", "0.7.9")), all);
+        // ...and at 0.7.2 itself, just its own notes.
         assert_eq!(versions(to_show("", "0.7.2")), ["0.7.2"]);
-        assert_eq!(versions(to_show("garbage", "0.7.2")), ["0.7.2"]);
+        // A normal update: only the new version.
+        assert_eq!(versions(to_show("0.7.8", "0.7.9")), ["0.7.9"]);
         // Never the future.
         assert_eq!(versions(to_show("0.6.0", "0.7.1")), ["0.7.1", "0.7.0"]);
     }
