@@ -1,20 +1,14 @@
 //! Live tab: what's being recorded right now, and the main buttons.
 //!
 //! Left: status with the replay buffer's on/off switch, the live preview
-//! (switchable off: then no preview frames are made at all), three tiles
-//! (Save clip / Screenshot / Record) and the latest clips in a row (left
-//! out when the window is too small for it and a decent preview).
-//! Right: "Sources" (what is recorded: a monitor, or only one app) and
-//! "Sound in clips" (quick volume sliders).
+//! (switchable off: then no preview frames are made at all; resizable from
+//! its corner) and three tiles (Save clip / Screenshot / Record), all sized
+//! in proportion to the window. Right: "Sources" (what is recorded: a
+//! monitor, or only one app) and "Sound in clips" (quick volume sliders).
 //!
 //! The preview picture comes from the core's recorder (see
 //! `capture::preview`), so it shows exactly the monitor being captured and
 //! moves with it when the capture follows focus to another monitor.
-
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Receiver, Sender, channel};
-use std::time::{Duration, Instant, SystemTime};
 
 use eframe::egui::{self, Color32, CornerRadius, Rect, RichText, Sense, TextureOptions, pos2, vec2};
 
@@ -24,36 +18,14 @@ use crate::app::ipc::UiToCore;
 use crate::capture::window::AppWindow;
 use crate::config::CaptureMode;
 
-/// What the Live tab asks the window to do.
-pub enum LiveAction {
-    /// Open this clip in the trimmer.
-    OpenClip(PathBuf),
-    /// Show the Clips tab.
-    ShowClips,
-}
-
-struct Recent {
-    path: PathBuf,
-    name: String,
-}
-
-/// A thumbnail and length, made by the worker thread.
-struct Thumb {
-    path: PathBuf,
-    rgba: Option<(u32, u32, Vec<u8>)>,
-    seconds: Option<f64>,
-}
+/// The smallest the preview can be dragged to, as a share of the largest.
+const MIN_PREVIEW_SIZE: f32 = 0.35;
 
 #[derive(Default)]
 pub struct LiveTab {
     reader: crate::capture::preview::Reader,
     texture: Option<egui::TextureHandle>,
     size: (u32, u32),
-    recent: Vec<Recent>,
-    last_scan: Option<Instant>,
-    /// path -> (texture, seconds); `None` texture while being made.
-    thumbs: HashMap<PathBuf, (Option<egui::TextureHandle>, Option<f64>)>,
-    worker: Option<(Sender<PathBuf>, Receiver<Thumb>)>,
     monitors: Option<Vec<crate::capture::MonitorInfo>>,
     /// The "Record one app" picker is open, with the windows listed when
     /// it opened (only listed then, and on Refresh).
@@ -61,8 +33,7 @@ pub struct LiveTab {
 }
 
 impl LiveTab {
-    pub fn ui(&mut self, ui: &mut egui::Ui, shared: &mut Shared, sound: &mut super::sound_tab::SoundTab) -> Option<LiveAction> {
-        let mut action = None;
+    pub fn ui(&mut self, ui: &mut egui::Ui, shared: &mut Shared, sound: &mut super::sound_tab::SoundTab) {
         let preview_on = shared.settings.ui.live_preview;
         if preview_on {
             if let Some((w, h, rgba)) = self.reader.next_frame() {
@@ -88,7 +59,7 @@ impl LiveTab {
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = gap;
             ui.allocate_ui_with_layout(vec2(left_w, avail.y), egui::Layout::top_down(egui::Align::Min), |ui| {
-                action = self.main_column(ui, shared);
+                self.main_column(ui, shared);
             });
             ui.allocate_ui_with_layout(vec2(right_w, avail.y), egui::Layout::top_down(egui::Align::Min), |ui| {
                 egui::ScrollArea::vertical().id_salt("live-side").auto_shrink([false, false]).show(ui, |ui| {
@@ -99,7 +70,6 @@ impl LiveTab {
             });
         });
         self.picker_dialog(ui.ctx(), shared);
-        action
     }
 
     /// What is recorded: follow focus, one monitor, or only one app.
@@ -221,7 +191,7 @@ impl LiveTab {
         }
     }
 
-    fn main_column(&mut self, ui: &mut egui::Ui, shared: &mut Shared) -> Option<LiveAction> {
+    fn main_column(&mut self, ui: &mut egui::Ui, shared: &mut Shared) {
         let status = shared.status.clone().filter(|_| shared.connected);
         let c = shared.theme.colors.clone();
         let theme = shared.theme.clone();
@@ -289,27 +259,28 @@ impl LiveTab {
         });
         ui.add_space(12.0);
 
-        // Heights, decided before the preview so it can leave room: the
-        // tiles always; the recent clips row only while the preview stays
-        // at least MIN_PREVIEW tall (on small windows the preview wins).
-        const TILES_H: f32 = 60.0;
-        const GAP: f32 = 12.0;
-        const MIN_PREVIEW: f32 = 170.0;
+        // Proportional layout: the gap and the tiles' height follow the
+        // window's height; the preview gets the rest at most, times the
+        // size it was dragged to (`ui.live_preview_size`); the tiles are as
+        // wide as the preview (but never cramped), centered under it.
         let w = ui.available_width();
-        let thumbs = (((w + THUMB_GAP) / 150.0).floor() as usize).clamp(3, MAX_RECENT);
-        let thumb_w = (w - THUMB_GAP * (thumbs - 1) as f32) / thumbs as f32;
-        let strip_h = STRIP_HEAD_H + thumb_w * 9.0 / 16.0 + THUMB_NAME_H;
         let avail_h = ui.available_height();
-        let show_strip = avail_h - TILES_H - GAP - (GAP + 6.0) - strip_h >= MIN_PREVIEW;
-        let below = TILES_H + GAP + if show_strip { GAP + 6.0 + strip_h } else { 0.0 };
+        let gap = (avail_h * 0.022).clamp(10.0, 18.0);
+        let tiles_h = (avail_h * 0.1).clamp(54.0, 84.0);
+        let max_area = vec2(w, (avail_h - tiles_h - gap).max(120.0));
+        let (pw, ph) = preview_aspect(self.size, status.as_ref().map(|s| s.resolution.as_str()));
+        let fit = (max_area.x / pw).min(max_area.y / ph);
+        let max_box = vec2(pw * fit, ph * fit);
+        let size = shared.settings.ui.live_preview_size.clamp(MIN_PREVIEW_SIZE, 1.0);
+        let box_size = vec2((max_box.x * size).round(), (max_box.y * size).round());
+
+        // The preview and the tiles are one block, centered in the space
+        // below the status line (so a smaller preview stays balanced).
+        ui.add_space(((avail_h - box_size.y - gap - tiles_h) / 2.0).max(0.0).floor());
 
         // The preview: exactly the recorded picture's shape (no black bars
         // around it that could look like part of the clip).
-        let area = vec2(w, (avail_h - below).max(120.0));
-        let (pw, ph) = preview_aspect(self.size, status.as_ref().map(|s| s.resolution.as_str()));
-        let scale = (area.x / pw).min(area.y / ph);
-        let box_size = vec2((pw * scale).round(), (ph * scale).round());
-        let (row, _) = ui.allocate_exact_size(vec2(area.x, box_size.y), Sense::hover());
+        let (row, _) = ui.allocate_exact_size(vec2(w, box_size.y), Sense::hover());
         let rect = Rect::from_center_size(row.center(), box_size);
         let radius = CornerRadius::same((shared.theme.corner_radius * 1.5) as u8);
         ui.painter().rect_filled(rect, radius, c.preview.0);
@@ -342,7 +313,11 @@ impl LiveTab {
             };
             ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(15.0), Color32::from_gray(170));
         }
-        ui.add_space(GAP);
+        if let Some(new) = resize_grip(ui, rect, max_box, c.accent.0) {
+            shared.settings.ui.live_preview_size = new;
+            shared.mark_dirty();
+        }
+        ui.add_space(gap);
 
         // The three tiles: Save clip (wider), Screenshot, Record.
         let keys = shared.settings.hotkeys.clone();
@@ -350,12 +325,17 @@ impl LiveTab {
         let session = status.as_ref().is_some_and(|s| s.rec_session_mode);
         let rec_active = status.as_ref().is_some_and(|s| s.rec_active);
         let red = c.error.0;
-        let unit = (w - 2.0 * GAP) / 3.5;
+        let row_w = box_size.x.max(440.0_f32.min(w));
+        let unit = (row_w - 2.0 * gap) / 3.5;
         let mut save_clip = false;
         let mut screenshot = false;
         let mut record = false;
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = GAP;
+            ui.spacing_mut().item_spacing.x = gap;
+            if w > row_w {
+                // Centered under the preview.
+                ui.add_space(((w - row_w) / 2.0).floor());
+            }
             let held = fmt_duration(shared.settings.buffer_seconds as f64);
             let save = Tile {
                 title: "Save clip",
@@ -367,10 +347,10 @@ impl LiveTab {
                 enabled: recording,
             };
             let tip = if recording { format!("Save the last {held} as a clip") } else { "Turn the replay buffer on to save clips".to_string() };
-            save_clip = tile(ui, &theme, vec2(unit * 1.5, TILES_H), save).on_hover_text(tip).clicked();
+            save_clip = tile(ui, &theme, vec2(unit * 1.5, tiles_h), save).on_hover_text(tip).clicked();
 
             let shot = Tile { title: "Screenshot", sub: None, key: Some(show(&keys.screenshot)), glyph: None, fill: None, fg: c.text.0, enabled: true };
-            screenshot = tile(ui, &theme, vec2(unit, TILES_H), shot).on_hover_text("Save a picture of the screen being recorded").clicked();
+            screenshot = tile(ui, &theme, vec2(unit, tiles_h), shot).on_hover_text("Save a picture of the screen being recorded").clicked();
 
             let (title, sub, glyph, fill, fg) = match &status {
                 Some(s) if s.rec_active && !session => {
@@ -389,7 +369,7 @@ impl LiveTab {
             } else {
                 "Records until you press Stop, then saves the whole recording."
             };
-            record = tile(ui, &theme, vec2(unit, TILES_H), rec).on_hover_text(tip).clicked();
+            record = tile(ui, &theme, vec2(unit, tiles_h), rec).on_hover_text(tip).clicked();
         });
         if save_clip {
             shared.outbox.push(UiToCore::SaveClip);
@@ -401,117 +381,6 @@ impl LiveTab {
             shared.outbox.push(UiToCore::Record);
         }
 
-        if show_strip {
-            ui.add_space(GAP + 6.0);
-            self.filmstrip(ui, shared, thumbs, thumb_w)
-        } else {
-            // Keep the list fresh for when the window grows again.
-            self.refresh_recent(ui.ctx(), shared);
-            None
-        }
-    }
-
-    /// Reads the clips folder again next frame (a clip was deleted).
-    pub fn rescan(&mut self) {
-        self.last_scan = None;
-    }
-
-    fn refresh_recent(&mut self, ctx: &egui::Context, shared: &Shared) {
-        if self.last_scan.is_none_or(|t| t.elapsed() > Duration::from_secs(4)) {
-            self.scan(&shared.settings.clips_dir);
-        }
-        self.collect_thumbs(ctx);
-    }
-
-    /// "Recent clips": the newest `count` clips in a row, `thumb_w` wide;
-    /// clicking one opens it in the editor.
-    fn filmstrip(&mut self, ui: &mut egui::Ui, shared: &mut Shared, count: usize, thumb_w: f32) -> Option<LiveAction> {
-        self.refresh_recent(ui.ctx(), shared);
-        let mut action = None;
-        let c = shared.theme.colors.clone();
-        ui.allocate_ui_with_layout(vec2(ui.available_width(), STRIP_HEAD_H), egui::Layout::left_to_right(egui::Align::Min), |ui| {
-            ui.label(RichText::new("Recent clips").family(crate::themes::brand_bold_family()).size(shared.theme.fonts.body + 1.0));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                if ui.link("See all").on_hover_text("Open the Clips tab").clicked() {
-                    action = Some(LiveAction::ShowClips);
-                }
-            });
-        });
-        if self.recent.is_empty() {
-            ui.label(dim(shared, "Clips you save show up here."));
-            return action;
-        }
-        let thumb = vec2(thumb_w, thumb_w * 9.0 / 16.0);
-        ui.horizontal_top(|ui| {
-            ui.spacing_mut().item_spacing.x = THUMB_GAP;
-            for r in self.recent.iter().take(count) {
-                let (tex, secs) = self.thumbs.get(&r.path).cloned().unwrap_or((None, None));
-                let (cell, resp) = ui.allocate_exact_size(vec2(thumb_w, thumb.y + THUMB_NAME_H), Sense::click());
-                resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &r.name));
-                let p = ui.painter();
-                let rect = Rect::from_min_size(cell.min, thumb);
-                p.rect_filled(rect, 8.0, c.preview.0);
-                if let Some(t) = &tex {
-                    p.add(egui::epaint::RectShape::filled(rect, 8.0, Color32::WHITE).with_texture(t.id(), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0))));
-                }
-                if let Some(s) = secs {
-                    let badge = p.layout_no_wrap(fmt_duration(s), egui::FontId::proportional(11.0), Color32::WHITE);
-                    let b = Rect::from_min_size(rect.max - badge.size() - vec2(12.0, 8.0), badge.size() + vec2(8.0, 2.0));
-                    p.rect_filled(b, 4.0, Color32::from_black_alpha(180));
-                    p.galley(b.min + vec2(4.0, 1.0), badge, Color32::WHITE);
-                }
-                if resp.hovered() {
-                    p.rect_stroke(rect, 8.0, egui::Stroke::new(2.0, c.accent.0), egui::StrokeKind::Inside);
-                }
-                let name = super::widgets::one_line(p, r.name.clone(), egui::FontId::proportional(12.0), c.text_dim.0, thumb_w);
-                p.galley(pos2(cell.left(), rect.bottom() + 4.0), name, c.text_dim.0);
-                if resp.on_hover_text("Open in the editor").on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                    action = Some(LiveAction::OpenClip(r.path.clone()));
-                }
-            }
-        });
-        action
-    }
-
-    /// The newest videos in the clips folder (up to MAX_RECENT).
-    fn scan(&mut self, dir: &Path) {
-        self.last_scan = Some(Instant::now());
-        let mut files: Vec<(SystemTime, PathBuf)> = std::fs::read_dir(dir)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter(|e| e.path().extension().is_some_and(|x| x.eq_ignore_ascii_case("mp4")))
-            .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
-            .collect();
-        files.sort_by_key(|f| std::cmp::Reverse(f.0));
-        self.recent = files
-            .into_iter()
-            .take(MAX_RECENT)
-            .map(|(_, path)| Recent { name: path.file_stem().unwrap_or_default().to_string_lossy().into_owned(), path })
-            .collect();
-        // Forget thumbnails of clips that dropped off the list.
-        let keep: Vec<PathBuf> = self.recent.iter().map(|r| r.path.clone()).collect();
-        self.thumbs.retain(|p, _| keep.contains(p));
-        for r in &self.recent {
-            if !self.thumbs.contains_key(&r.path) {
-                self.thumbs.insert(r.path.clone(), (None, None));
-                let (tx, _) = self.worker.get_or_insert_with(start_thumb_worker);
-                let _ = tx.send(r.path.clone());
-            }
-        }
-    }
-
-    fn collect_thumbs(&mut self, ctx: &egui::Context) {
-        let Some((_, rx)) = &self.worker else { return };
-        while let Ok(t) = rx.try_recv() {
-            let tex = t.rgba.map(|(w, h, px)| {
-                let img = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &px);
-                ctx.load_texture(format!("thumb-{}", t.path.display()), img, TextureOptions::LINEAR)
-            });
-            if let Some(slot) = self.thumbs.get_mut(&t.path) {
-                *slot = (tex, t.seconds);
-            }
-        }
     }
 }
 
@@ -529,13 +398,6 @@ fn preview_aspect(frame: (u32, u32), resolution: Option<&str>) -> (f32, f32) {
     });
     parsed.unwrap_or((16.0, 9.0))
 }
-
-/// Recent clips: at most this many, and the spacing / text heights of
-/// their row.
-const MAX_RECENT: usize = 6;
-const THUMB_GAP: f32 = 10.0;
-const STRIP_HEAD_H: f32 = 28.0;
-const THUMB_NAME_H: f32 = 22.0;
 
 enum Glyph {
     Dot(Color32),
@@ -625,6 +487,39 @@ fn tile(ui: &mut egui::Ui, theme: &crate::themes::Theme, size: egui::Vec2, t: Ti
     if t.enabled { resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp }
 }
 
+/// The preview's resize grip, in its bottom-right corner: drag it to make
+/// the preview smaller or bigger (the top edge stays put; it stays
+/// centered), double-click it for the largest size. Returns the new size
+/// (a share of `max_box`, the largest that fits) when it changed.
+fn resize_grip(ui: &mut egui::Ui, rect: Rect, max_box: egui::Vec2, accent: Color32) -> Option<f32> {
+    let grip = Rect::from_min_size(rect.max - vec2(24.0, 24.0), vec2(24.0, 24.0));
+    let resp = ui.interact(grip, egui::Id::unique("live-preview-grip"), Sense::click_and_drag());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Resize preview"));
+    let active = resp.hovered() || resp.dragged();
+    let p = ui.painter();
+    // Three short diagonal lines, on a dark backing so they show on any
+    // picture.
+    p.rect_filled(grip.shrink(3.0), 5.0, Color32::from_black_alpha(if active { 170 } else { 110 }));
+    let col = if active { accent } else { Color32::from_white_alpha(200) };
+    let corner = grip.max - vec2(7.0, 7.0);
+    for d in [5.0, 9.0, 13.0] {
+        p.line_segment([corner - vec2(d, 0.0), corner - vec2(0.0, d)], egui::Stroke::new(1.5, col));
+    }
+    let resp = resp
+        .on_hover_cursor(egui::CursorIcon::ResizeNwSe)
+        .on_hover_text("Drag to resize the preview. Double-click: largest size.");
+    if resp.double_clicked() {
+        return Some(1.0);
+    }
+    if resp.dragged() {
+        let at = resp.interact_pointer_pos()?;
+        let by_h = (at.y - rect.top()) / max_box.y.max(1.0);
+        let by_w = 2.0 * (at.x - rect.center().x) / max_box.x.max(1.0);
+        return Some(by_h.max(by_w).clamp(MIN_PREVIEW_SIZE, 1.0));
+    }
+    None
+}
+
 /// An on/off switch (the replay buffer's).
 fn switch(ui: &mut egui::Ui, theme: &crate::themes::Theme, on: bool, label: &str) -> egui::Response {
     let c = &theme.colors;
@@ -653,68 +548,6 @@ fn card(ui: &mut egui::Ui, shared: &mut Shared, title: &str, add: impl FnOnce(&m
             ui.add_space(10.0);
             add(ui, shared);
         });
-}
-
-/// Makes thumbnails (and reads clip lengths) one at a time with ffmpeg,
-/// cached as small PNGs in `%LOCALAPPDATA%\Snag\thumbs`.
-fn start_thumb_worker() -> (Sender<PathBuf>, Receiver<Thumb>) {
-    let (req_tx, req_rx) = channel::<PathBuf>();
-    let (res_tx, res_rx) = channel::<Thumb>();
-    std::thread::Builder::new()
-        .name("thumbnails".into())
-        .spawn(move || {
-            for path in req_rx {
-                let thumb = make_thumb(&path);
-                if res_tx.send(thumb).is_err() {
-                    break;
-                }
-            }
-        })
-        .ok();
-    (req_tx, res_rx)
-}
-
-fn make_thumb(path: &Path) -> Thumb {
-    let seconds = crate::win::hidden_command(crate::paths::ffprobe_exe())
-        .args(["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0"])
-        .arg(path)
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<f64>().ok());
-    let dir = crate::paths::thumbs_dir();
-    let _ = std::fs::create_dir_all(&dir);
-    let stamp = std::fs::metadata(path)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let name = format!("{}-{stamp}.png", path.file_stem().unwrap_or_default().to_string_lossy());
-    let png_path = dir.join(name);
-    if !png_path.is_file() {
-        let at = seconds.map(|s| (s / 3.0).min(2.0)).unwrap_or(0.0);
-        let _ = crate::win::hidden_command(crate::paths::ffmpeg_exe())
-            .args(["-v", "error", "-nostdin", "-y", "-ss", &format!("{at:.2}"), "-i"])
-            .arg(path)
-            .args(["-frames:v", "1", "-vf", "scale=320:-2", "-f", "image2", "-c:v", "png"])
-            .arg(&png_path)
-            .status();
-    }
-    Thumb { path: path.to_path_buf(), rgba: read_png(&png_path), seconds }
-}
-
-pub(super) fn read_png(path: &Path) -> Option<(u32, u32, Vec<u8>)> {
-    let decoder = png::Decoder::new(std::io::BufReader::new(std::fs::File::open(path).ok()?));
-    let mut reader = decoder.read_info().ok()?;
-    let mut buf = vec![0; reader.output_buffer_size()?];
-    let info = reader.next_frame(&mut buf).ok()?;
-    let (w, h) = (info.width, info.height);
-    let rgba = match info.color_type {
-        png::ColorType::Rgba => buf[..(w * h * 4) as usize].to_vec(),
-        png::ColorType::Rgb => buf[..(w * h * 3) as usize].as_chunks::<3>().0.iter().flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
-        _ => return None,
-    };
-    Some((w, h, rgba))
 }
 
 #[cfg(test)]

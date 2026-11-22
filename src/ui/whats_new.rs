@@ -26,6 +26,11 @@ pub struct Notes {
 /// Newest first. The top entry must be the current version (tested).
 pub const HISTORY: &[Notes] = &[
     Notes {
+        version: "0.7.7",
+        new: &["Resize the live preview: drag its bottom-right corner (double-click for full size)."],
+        fixed: &["The Live tab is tidier: recent clips moved out, and the preview and buttons scale with the window."],
+    },
+    Notes {
         version: "0.7.6",
         new: &[
             "New Live tab: big Save clip, Screenshot and Record tiles with their hotkeys.",

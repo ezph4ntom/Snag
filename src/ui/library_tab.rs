@@ -190,8 +190,6 @@ pub struct LibraryTab {
     /// Files the trimmer is using (set by the window every frame); they
     /// can't be deleted.
     pub trimmer_files: Vec<PathBuf>,
-    /// A clip was deleted (the Live tab's recent clips need a rescan).
-    pub clips_changed: bool,
     /// Messages for the window's toast.
     pub toasts: Vec<String>,
 }
@@ -232,7 +230,6 @@ impl LibraryTab {
             confirm_delete: None,
             delete_key: false,
             trimmer_files: Vec::new(),
-            clips_changed: false,
             toasts: Vec::new(),
         }
     }
@@ -755,7 +752,6 @@ impl LibraryTab {
         }
         self.clips.retain(|c| c.path != path);
         self.last_scan = None;
-        self.clips_changed = true;
         Ok(())
     }
 
@@ -1869,5 +1865,20 @@ fn make_thumb(path: &Path, (stamp, size): Ident) -> Option<(u32, u32, Vec<u8>)> 
             .arg(&png_path)
             .status();
     }
-    super::live_tab::read_png(&png_path)
+    read_png(&png_path)
+}
+
+/// A small PNG (a cached thumbnail) as RGBA.
+fn read_png(path: &Path) -> Option<(u32, u32, Vec<u8>)> {
+    let decoder = png::Decoder::new(std::io::BufReader::new(std::fs::File::open(path).ok()?));
+    let mut reader = decoder.read_info().ok()?;
+    let mut buf = vec![0; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut buf).ok()?;
+    let (w, h) = (info.width, info.height);
+    let rgba = match info.color_type {
+        png::ColorType::Rgba => buf[..(w * h * 4) as usize].to_vec(),
+        png::ColorType::Rgb => buf[..(w * h * 3) as usize].as_chunks::<3>().0.iter().flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
+        _ => return None,
+    };
+    Some((w, h, rgba))
 }

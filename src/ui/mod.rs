@@ -1017,7 +1017,6 @@ impl eframe::App for App {
         self.tab_bar_size = r.map(|r| r.rect.size()).unwrap_or(egui::vec2(600.0, 52.0));
         let bg = colors.background.0;
         let m = self.shared.theme.spacing.window_margin.clamp(0.0, 127.0) as i8 + 6;
-        let mut open_clip = None;
         let searching = !self.search.trim().is_empty();
         egui::CentralPanel::default_margins()
             .frame(egui::Frame::new().fill(bg).inner_margin(egui::Margin::symmetric(m + 4, m)))
@@ -1025,7 +1024,7 @@ impl eframe::App for App {
                 self.search_results(ui);
             } else {
                 match self.tab {
-                Tab::Live => open_clip = self.live.ui(ui, &mut self.shared, &mut self.sound),
+                Tab::Live => self.live.ui(ui, &mut self.shared, &mut self.sound),
                 Tab::Sound => self.sound.ui(ui, &mut self.shared),
                 Tab::Clips => {
                     if self.trimmer.is_open() {
@@ -1059,18 +1058,7 @@ impl eframe::App for App {
                 Tab::Quality => self.quality.ui(ui, &mut self.shared),
                 }
             });
-        match open_clip {
-            Some(live_tab::LiveAction::OpenClip(path)) => {
-                self.trimmer.load(path);
-                self.tab = Tab::Clips;
-            }
-            Some(live_tab::LiveAction::ShowClips) => self.tab = Tab::Clips,
-            None => {}
-        }
         self.library.modals(&ctx, &self.shared);
-        if std::mem::take(&mut self.library.clips_changed) {
-            self.live.rescan();
-        }
         self.close_dialog(&ctx);
         if self.whats_new.dialog(&ctx, &self.shared) {
             let now = crate::update::current();
