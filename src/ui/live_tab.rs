@@ -27,6 +27,12 @@ pub struct LiveTab {
     texture: Option<egui::TextureHandle>,
     size: (u32, u32),
     monitors: Option<Vec<crate::capture::MonitorInfo>>,
+    /// Where the preview block (preview + tiles) is this frame: its top
+    /// and bottom on screen and the gap used, for lining up the right
+    /// column with it.
+    block: Option<(f32, f32, f32)>,
+    /// The right column's own height (its cards without stretching).
+    side_h: f32,
     /// The "Record one app" picker is open, with the windows listed when
     /// it opened (only listed then, and on Refresh).
     picker: Option<Vec<AppWindow>>,
@@ -63,9 +69,27 @@ impl LiveTab {
             });
             ui.allocate_ui_with_layout(vec2(right_w, avail.y), egui::Layout::top_down(egui::Align::Min), |ui| {
                 egui::ScrollArea::vertical().id_salt("live-side").auto_shrink([false, false]).show(ui, |ui| {
+                    // Lined up with the preview block on the left: the cards
+                    // start at the preview's top edge and "Sound in clips"
+                    // reaches down to the tiles' bottom edge (when there's
+                    // room), with the same gap between them as on the left.
+                    let here = ui.cursor().top();
+                    let (top, bottom, gap) = self.block.unwrap_or((here, here, 14.0));
+                    ui.add_space((top - here).max(0.0));
+                    let start = ui.cursor().top();
                     self.sources(ui, shared);
-                    ui.add_space(14.0);
-                    card(ui, shared, "Sound in clips", |ui, shared| sound.compact(ui, shared));
+                    ui.add_space(gap);
+                    // (2 px short of the edge, so its border never gets clipped.)
+                    let fill = bottom.min(ui.clip_rect().bottom()) - 2.0 - ui.cursor().top();
+                    let sound_top = ui.cursor().top();
+                    let sound_h = card(ui, shared, "Sound in clips", fill, |ui, shared| sound.compact(ui, shared));
+                    // The column's own height (without the stretch), which
+                    // the left column centers on next frame.
+                    let side_h = sound_top - start + sound_h + 2.0;
+                    if (side_h - self.side_h).abs() > 0.5 {
+                        self.side_h = side_h;
+                        ui.ctx().request_repaint();
+                    }
                 });
             });
         });
@@ -78,7 +102,7 @@ impl LiveTab {
         let mut cap = shared.settings.capture.clone();
         let mut open_picker = false;
         let status = shared.status.clone().filter(|s| shared.connected && s.recording);
-        card(ui, shared, "Sources", |ui, shared| {
+        card(ui, shared, "Sources", 0.0, |ui, shared| {
             let c = shared.theme.colors.clone();
             if ui.radio(cap.mode == CaptureMode::FollowFocus, "Screen: follow focus").on_hover_text("The monitor with the active window").clicked() {
                 cap.mode = CaptureMode::FollowFocus;
@@ -266,17 +290,22 @@ impl LiveTab {
         let w = ui.available_width();
         let avail_h = ui.available_height();
         let gap = (avail_h * 0.022).clamp(10.0, 18.0);
+        // egui's own spacing between the preview, the gap and the tiles.
+        let spacing = 2.0 * ui.spacing().item_spacing.y;
         let tiles_h = (avail_h * 0.1).clamp(54.0, 84.0);
-        let max_area = vec2(w, (avail_h - tiles_h - gap).max(120.0));
+        let max_area = vec2(w, (avail_h - tiles_h - gap - spacing).max(120.0));
         let (pw, ph) = preview_aspect(self.size, status.as_ref().map(|s| s.resolution.as_str()));
         let fit = (max_area.x / pw).min(max_area.y / ph);
         let max_box = vec2(pw * fit, ph * fit);
         let size = shared.settings.ui.live_preview_size.clamp(MIN_PREVIEW_SIZE, 1.0);
         let box_size = vec2((max_box.x * size).round(), (max_box.y * size).round());
 
-        // The preview and the tiles are one block, centered in the space
-        // below the status line (so a smaller preview stays balanced).
-        ui.add_space(((avail_h - box_size.y - gap - tiles_h) / 2.0).max(0.0).floor());
+        // The preview and the tiles are one block; it and the right column
+        // start at the same height, and the taller of the two is centered
+        // in the space below the status line (so a smaller preview stays
+        // balanced and the right column's cards never get pushed off).
+        let tallest = (box_size.y + gap + tiles_h + spacing).max(self.side_h);
+        ui.add_space(((avail_h - tallest) / 2.0).max(0.0).floor());
 
         // The preview: exactly the recorded picture's shape (no black bars
         // around it that could look like part of the clip).
@@ -330,7 +359,7 @@ impl LiveTab {
         let mut save_clip = false;
         let mut screenshot = false;
         let mut record = false;
-        ui.horizontal(|ui| {
+        let tiles_row = ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = gap;
             if w > row_w {
                 // Centered under the preview.
@@ -370,7 +399,10 @@ impl LiveTab {
                 "Records until you press Stop, then saves the whole recording."
             };
             record = tile(ui, &theme, vec2(unit, tiles_h), rec).on_hover_text(tip).clicked();
-        });
+        })
+        .response
+        .rect;
+        self.block = Some((rect.top(), tiles_row.bottom(), gap));
         if save_clip {
             shared.outbox.push(UiToCore::SaveClip);
         }
@@ -534,20 +566,32 @@ fn switch(ui: &mut egui::Ui, theme: &crate::themes::Theme, on: bool, label: &str
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-/// A white card with a bold title (the Daylight look).
-fn card(ui: &mut egui::Ui, shared: &mut Shared, title: &str, add: impl FnOnce(&mut egui::Ui, &mut Shared)) {
+/// A white card with a bold title (the Daylight look), at least `min_h`
+/// tall (0: just its content). Returns how tall its content alone makes it.
+fn card(ui: &mut egui::Ui, shared: &mut Shared, title: &str, min_h: f32, add: impl FnOnce(&mut egui::Ui, &mut Shared)) -> f32 {
     let c = shared.theme.colors.clone();
-    egui::Frame::new()
+    const MARGIN: i8 = 18;
+    let resp = egui::Frame::new()
         .fill(c.panel.0)
         .stroke(egui::Stroke::new(1.0, c.border.0))
         .corner_radius(CornerRadius::same((shared.theme.corner_radius * 1.5) as u8))
-        .inner_margin(egui::Margin::same(18))
+        .inner_margin(egui::Margin::same(MARGIN))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.label(RichText::new(title).family(crate::themes::brand_bold_family()).size(shared.theme.fonts.body + 1.5));
             ui.add_space(10.0);
             add(ui, shared);
+            // Stretch: pad after the content up to min_h (the frame adds its
+            // margins and stroke around this).
+            let natural = ui.min_rect().height();
+            let extra = (min_h - 2.0 * (MARGIN as f32 + 1.0) - natural).max(0.0);
+            if extra > 0.0 {
+                ui.add_space(extra);
+            }
+            extra
         });
+    // What the card would be without the stretch.
+    resp.response.rect.height() - resp.inner
 }
 
 #[cfg(test)]
