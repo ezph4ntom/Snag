@@ -26,6 +26,18 @@ pub struct Notes {
 /// Newest first. The top entry must be the current version (tested).
 pub const HISTORY: &[Notes] = &[
     Notes {
+        version: "0.7.5",
+        new: &[
+            "Clip editor: split, cut parts out, reorder, and join clips (Add clip).",
+            "Save an edit as one clip, or each piece as its own file.",
+        ],
+        fixed: &[
+            "The live preview has no black bars: it's the shape of what's recorded.",
+            "Clips / Uploads: the count is centered.",
+            "The editor uses much less CPU while playing a clip.",
+        ],
+    },
+    Notes {
         version: "0.7.4",
         new: &[],
         fixed: &["Shorter notes here, and \"Got it\" is centered."],

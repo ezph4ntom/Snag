@@ -1029,7 +1029,10 @@ impl eframe::App for App {
                 Tab::Sound => self.sound.ui(ui, &mut self.shared),
                 Tab::Clips => {
                     if self.trimmer.is_open() {
-                        if self.trimmer.ui(ui, &mut self.shared) {
+                        if self.trimmer.wants_clip_list() {
+                            self.library.refresh_list(ui.ctx(), &self.shared);
+                        }
+                        if self.trimmer.ui(ui, &mut self.shared, &self.library) {
                             self.trimmer.close();
                         }
                     } else {

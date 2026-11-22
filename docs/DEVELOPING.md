@@ -118,7 +118,7 @@ are in `.github/ISSUE_TEMPLATE`).
 ```powershell
 cargo test                                                         # unit tests (fast)
 cargo test --release --test reliability -- --ignored --nocapture   # 50-clip tests (~2 min)
-cargo test --release --test trimmer -- --ignored --nocapture       # trim exactness + preview sound (~10 s)
+cargo test --release --test trimmer -- --ignored --nocapture       # trim exactness, preview sound, joins (~35 s)
 cargo test --release --test recording -- --ignored --nocapture     # long recordings: snapshot + stop (~15 s)
 cargo test --release --test audio_capture -- --ignored --nocapture # apps on two devices, mic (plays quiet tones)
 cargo test --release --test window_capture -- --ignored --nocapture # "only this app": covered, minimized, resized (stretched), closed, reopened (~20 s)
@@ -242,7 +242,7 @@ ffmpeg details that matter (all measured; see comments in `src/encode/ffmpeg.rs`
 | `audio/` | WASAPI loopback capture, test beep source | audio |
 | `hotkeys/`, `app/` | hotkey parsing/registration, keyboard hook; core process (tray, focus hook, controller, IPC) | 3 hotkeys |
 | `sound.rs` | clip sound via `PlaySound` (no audio thread while idle) | 3 hotkeys |
-| `trimmer/`, `ui/trimmer_tab.rs` | probe, preview decoder, fast/precise export; trimmer UI | 4 trimmer |
+| `trimmer/`, `ui/trimmer_tab.rs` | probe, preview decoder, fast/precise export of an edit (pieces of one or more clips: one trimmed clip, one joined `_edit` clip via the concat demuxer with per-part `duration`/`outpoint` so video stays frame-exact at joins, or one file per piece); the clip editor UI (split, remove, reorder, "Add clip" from the library) | 4 trimmer |
 | `library.rs`, `ui/library_tab.rs` | clip library (favorites, collections, upload records in `library.json`), cards, thumbnails, delete to the Recycle Bin, Uploads list, Streamable login | library |
 | `update.rs`, `ui/about.rs` | GitHub release check, installer download + SHA-256 check, silent install; Settings → About (version, build commit from `build.rs`, links) | updates |
 | `ui/whats_new.rs` | "What's new" dialog the first time the window opens after an update (built-in notes per version, `settings.ui.last_seen_version`; a fresh install marks its version as seen); also Settings → About → What's new. **Every release adds its notes at the top of `HISTORY`** (a unit test fails until the current version has some) | updates |
@@ -296,5 +296,5 @@ ffmpeg details that matter (all measured; see comments in `src/encode/ffmpeg.rs`
 * In-process encoder (Media Foundation or the NVENC/AMF SDKs): no readback,
   no ffmpeg process.
 * HEVC/AV1 and HDR capture.
-* Trimmer: thumbnail filmstrip, hardware-decoded preview, rename/delete.
+* Editor: thumbnail filmstrip, hardware-decoded preview, crop/speed/filters.
 * Per-game profiles, window-only capture, auto-update, code signing.

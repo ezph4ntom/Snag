@@ -41,7 +41,7 @@
 
 **Share with a link.** Press **Upload** on a clip and the link is copied for you. Connect your Streamable account for links that last, or skip it and get a temporary Litterbox link.
 
-**Trim in seconds.** A built-in trimmer with sound: cut losslessly in an instant, or frame-exact. Trimmed clips keep their original date.
+**Edit in seconds.** A built-in clip editor with sound: trim, split and cut parts out, join clips together in any order, and save one clip or each piece. Cut losslessly in an instant, or frame-exact. Edited clips keep their original date.
 
 **Any key you like.** Any key or mouse button works as a hotkey, and it works inside games.
 

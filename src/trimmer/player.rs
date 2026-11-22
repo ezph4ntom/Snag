@@ -36,6 +36,18 @@ pub fn preview_size(w: u32, h: u32) -> (u32, u32) {
     (((w * scale) as u32).max(2) & !1, ((h * scale) as u32).max(2) & !1)
 }
 
+/// The size to decode the preview at: just enough for the `shown` size (in
+/// physical pixels), in steps of the clip's preview size (so resizing the
+/// window doesn't restart the decoder for every pixel), never more than
+/// `full`. A 1080p clip shown 580 px wide decodes at 640x360: a ninth of
+/// the pixels to convert, copy and upload for every frame.
+pub fn decode_size(full: (u32, u32), shown: (f32, f32)) -> (u32, u32) {
+    let need = (shown.0 / full.0.max(2) as f32).max(shown.1 / full.1.max(2) as f32);
+    let scale = [0.25, 1.0 / 3.0, 0.5, 2.0 / 3.0, 0.75, 1.0].into_iter().find(|&s| s >= need - 0.01).unwrap_or(1.0);
+    let even = |v: u32| ((v as f32 * scale).round() as u32).max(2) & !1;
+    (even(full.0), even(full.1))
+}
+
 impl Decoder {
     pub fn start(probe: &ClipProbe, start: usize, size: (u32, u32)) -> Result<Decoder> {
         let (w, h) = size;
@@ -109,5 +121,28 @@ impl Drop for Decoder {
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn previews_decode_at_about_the_size_they_are_shown() {
+        let full = preview_size(1920, 1080);
+        assert_eq!(full, (1920, 1080));
+        // A 1120x740 window shows a 1080p clip ~580 px wide: the smallest
+        // step that's still bigger, a third (640x360).
+        assert_eq!(decode_size(full, (580.0, 326.0)), (640, 360));
+        assert_eq!(decode_size(full, (900.0, 506.0)), (960, 540));
+        // Bigger on screen than the clip: never more than the clip.
+        assert_eq!(decode_size(full, (2560.0, 1440.0)), (1920, 1080));
+        assert_eq!(decode_size(full, (1300.0, 731.0)), (1440, 810));
+        // Tiny: a quarter, even sizes.
+        assert_eq!(decode_size(full, (100.0, 56.0)), (480, 270));
+        assert_eq!(decode_size((1280, 1024), (300.0, 240.0)), (320, 256));
+        // Clips over 1080p preview at 1080p at most.
+        assert_eq!(preview_size(3840, 2160), (1920, 1080));
     }
 }

@@ -10,20 +10,15 @@ use snag::audio::{AudioSource, AudioSourceFactory, BeepSource};
 use snag::buffer::clip::save_clip;
 use snag::buffer::source::{FrameSource, SyntheticSource};
 use snag::buffer::{Recorder, RecorderConfig, SourceFactory};
-use snag::trimmer::{Output, TrimJob, TrimMode, effective_start, probe, trim};
+use std::sync::Arc;
+
+use snag::trimmer::{EditJob, Output, Piece, TrimJob, TrimMode, effective_start, export, fast_join_problem, probe, trim};
 use snag::verify::verify_clip;
 
-#[test]
-#[ignore = "needs ffmpeg and a few seconds; run with --ignored"]
-fn fast_and_precise_trims_are_frame_exact() {
-    snag::logging::init("test-trimmer");
+/// Records a 4-second barcoded clip (60 fps, beeping sound) into `root`.
+fn record_clip(root: &std::path::Path, session: &str, w: u32, h: u32) -> std::path::PathBuf {
     let probes = snag::encode::detect::probe_all();
     let enc = probes.iter().find(|p| p.works).expect("an encoder");
-    let root = std::env::temp_dir().join(format!("snag-trim-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-
-    // 1. A 4-second source clip with frame-number barcodes.
-    let (w, h) = (1280, 720);
     let source: SourceFactory = Box::new(move || Ok(Box::new(SyntheticSource::new(w, h)) as Box<dyn FrameSource>));
     let rec = Recorder::start(
         RecorderConfig {
@@ -34,7 +29,7 @@ fn fast_and_precise_trims_are_frame_exact() {
             bitrate_kbps: 10_000,
             buffer_seconds: 4,
             segment_seconds: 1,
-            session_dir: root.join("session"),
+            session_dir: root.join(session),
             gpu_upload: enc.gpu_upload,
             audio_bitrate_kbps: 160,
         },
@@ -47,8 +42,22 @@ fn fast_and_precise_trims_are_frame_exact() {
         assert!(t0.elapsed() < Duration::from_secs(20), "recorder didn't start: {:?}", rec.session.error());
         std::thread::sleep(Duration::from_millis(50));
     }
-    let clip = save_clip(&rec.session, Instant::now(), 4.0, &root, Some("Test Game")).unwrap().path;
+    let clip = save_clip(&rec.session, Instant::now(), 4.0, root, Some("Test Game")).unwrap().path;
     rec.stop();
+    clip
+}
+
+#[test]
+#[ignore = "needs ffmpeg and a few seconds; run with --ignored"]
+fn fast_and_precise_trims_are_frame_exact() {
+    snag::logging::init("test-trimmer");
+    let probes = snag::encode::detect::probe_all();
+    let enc = probes.iter().find(|p| p.works).expect("an encoder");
+    let root = std::env::temp_dir().join(format!("snag-trim-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+
+    // 1. A 4-second source clip with frame-number barcodes.
+    let clip = record_clip(&root, "session", 1280, 720);
     let original = verify_clip(&clip, true, None).unwrap();
     assert_eq!(title(&clip), "Test Game", "clips are tagged with the game");
     assert!(original.is_ok(), "{}", original.summary());
@@ -120,6 +129,86 @@ fn fast_and_precise_trims_are_frame_exact() {
     let r = verify_clip(&clip, true, None).unwrap();
     assert!(r.is_ok() && r.frames == 60 && r.first_code == Some(first + 120), "{}", r.summary());
     println!("overwrite: {}", r.summary());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+#[ignore = "needs ffmpeg and ~20 seconds; run with --ignored"]
+fn editor_joins_pieces_and_clips() {
+    snag::logging::init("test-editor");
+    let probes = snag::encode::detect::probe_all();
+    let enc = probes.iter().find(|p| p.works).expect("an encoder").kind;
+    let root = std::env::temp_dir().join(format!("snag-edit-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let a = Arc::new(probe(&record_clip(&root, "a", 1280, 720)).unwrap());
+    let b = Arc::new(probe(&record_clip(&root, "b", 1280, 720)).unwrap());
+    let small = Arc::new(probe(&record_clip(&root, "c", 960, 540)).unwrap());
+    let first_a = verify_clip(&a.path, true, None).unwrap().first_code.unwrap();
+    let first_b = verify_clip(&b.path, true, None).unwrap().first_code.unwrap();
+    let piece = |p: &Arc<snag::trimmer::ClipProbe>, start, end| Piece { probe: p.clone(), start, end };
+    let run = |pieces: Vec<Piece>, mode, separate| {
+        let job = EditJob { pieces, mode, separate, encoder: enc };
+        export(&job, &|_| {}, &std::sync::atomic::AtomicBool::new(false))
+    };
+
+    // 1. Cut a second out of the middle (keep 0-59 and 120-179), losslessly:
+    //    one jump in the frame numbers, sound still in sync after it.
+    let out = run(vec![piece(&a, 0, 59), piece(&a, 120, 179)], TrimMode::Fast, false).unwrap();
+    assert_eq!(out.len(), 1);
+    assert!(out[0].file_name().unwrap().to_string_lossy().ends_with("_edit.mp4"), "{}", out[0].display());
+    let r = verify_clip(&out[0], true, None).unwrap();
+    println!("cut out the middle (fast): {}", r.summary());
+    assert_eq!(r.frames, 120);
+    assert_eq!(r.first_code, Some(first_a));
+    assert_eq!(r.gaps, vec![(60, first_a + 59, first_a + 120)]);
+    assert!(r.timing_errors.is_empty() && r.duplicate_frames.is_empty() && r.unreadable_frames.is_empty(), "{}", r.summary());
+    let audio = r.audio_seconds.expect("sound kept");
+    assert!((audio - 2.0).abs() < 0.1, "audio {audio:.3} s");
+    assert!(r.worst_av_offset_ms().abs() < 30.0, "{}", r.summary());
+    assert_eq!(title(&out[0]), "Test Game", "the joined clip keeps the game tag");
+
+    // 2. Two clips joined, B's piece first (order is the pieces' order).
+    let out = run(vec![piece(&b, 60, 119), piece(&a, 0, 59)], TrimMode::Fast, false).unwrap();
+    let r = verify_clip(&out[0], true, None).unwrap();
+    println!("two clips (fast): {}", r.summary());
+    assert_eq!(r.frames, 120);
+    assert_eq!(r.first_code, Some(first_b + 60));
+    assert_eq!(r.gaps, vec![(60, first_b + 119, first_a)]);
+    assert!(r.worst_av_offset_ms().abs() < 30.0, "{}", r.summary());
+
+    // 3. Clips of different sizes: Fast refuses, Precise fits the second one
+    //    into the first one's 1280x720 and starts exactly on frame 75.
+    let mixed = vec![piece(&a, 75, 134), piece(&small, 0, 59)];
+    assert!(fast_join_problem(&mixed).is_some());
+    assert!(run(mixed.clone(), TrimMode::Fast, false).is_err());
+    let out = run(mixed, TrimMode::Precise, false).unwrap();
+    let p = probe(&out[0]).unwrap();
+    let r = verify_clip(&out[0], false, None).unwrap();
+    println!("different sizes (precise): {}x{} {}", p.width, p.height, r.summary());
+    assert_eq!((p.width, p.height), (1280, 720));
+    assert_eq!(p.frame_count(), 120);
+    assert_eq!(r.first_code, Some(first_a + 75));
+    let audio = r.audio_seconds.expect("sound kept");
+    assert!((audio - 2.0).abs() < 0.15, "audio {audio:.3} s");
+
+    // 4. Each piece as its own file.
+    let out = run(vec![piece(&a, 0, 29), piece(&a, 30, 59)], TrimMode::Precise, true).unwrap();
+    assert_eq!(out.len(), 2);
+    for (i, f) in out.iter().enumerate() {
+        let r = verify_clip(f, true, None).unwrap();
+        println!("separate {i}: {}", r.summary());
+        assert!(r.is_ok(), "{}", r.summary());
+        assert_eq!(r.frames, 30);
+        assert_eq!(r.first_code, Some(first_a + 30 * i as u32));
+    }
+    // No temporary files left behind.
+    let leftovers: Vec<_> = std::fs::read_dir(&root)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.starts_with('.'))
+        .collect();
+    assert!(leftovers.is_empty(), "left behind: {leftovers:?}");
     let _ = std::fs::remove_dir_all(&root);
 }
 

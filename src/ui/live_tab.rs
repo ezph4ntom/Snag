@@ -64,7 +64,9 @@ impl LiveTab {
         let preview_on = shared.settings.ui.live_preview;
         if preview_on {
             if let Some((w, h, rgba)) = self.reader.next_frame() {
-                let image = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
+                // Opaque frames: "premultiplied" is the same picture without
+                // a per-pixel alpha check.
+                let image = egui::ColorImage::from_rgba_premultiplied([w as usize, h as usize], &rgba);
                 match &mut self.texture {
                     Some(t) => t.set(image, TextureOptions::LINEAR),
                     None => self.texture = Some(ui.ctx().load_texture("live-preview", image, TextureOptions::LINEAR)),
@@ -314,9 +316,15 @@ impl LiveTab {
         let two_rows = !keys_shown && row_w(ui, false) > avail_w;
         let buttons_total_h = if two_rows { 2.0 * buttons_h + 10.0 } else { buttons_h };
 
-        // The preview.
+        // The preview: exactly the recorded picture's shape (no black bars
+        // around it that could look like part of the clip), as big as fits
+        // above the buttons, which follow right under it.
         let area = vec2(ui.available_width(), (ui.available_height() - buttons_total_h - 16.0).max(120.0));
-        let (rect, _) = ui.allocate_exact_size(area, Sense::hover());
+        let (pw, ph) = preview_aspect(self.size, status.as_ref().map(|s| s.resolution.as_str()));
+        let scale = (area.x / pw).min(area.y / ph);
+        let box_size = vec2((pw * scale).round(), (ph * scale).round());
+        let (row, _) = ui.allocate_exact_size(vec2(area.x, box_size.y), Sense::hover());
+        let rect = Rect::from_center_size(row.center(), box_size);
         let radius = CornerRadius::same((shared.theme.corner_radius * 1.5) as u8);
         ui.painter().rect_filled(rect, radius, c.preview.0);
         if !shared.settings.ui.live_preview {
@@ -330,10 +338,10 @@ impl LiveTab {
                 shared.mark_dirty();
             }
         } else if let (Some(tex), true) = (&self.texture, recording) {
-            let (w, h) = (self.size.0.max(1) as f32, self.size.1.max(1) as f32);
-            let scale = (rect.width() / w).min(rect.height() / h);
-            let img = Rect::from_center_size(rect.center(), vec2(w * scale, h * scale));
-            ui.painter().image(tex.id(), img, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+            ui.painter().add(
+                egui::epaint::RectShape::filled(rect, radius, Color32::WHITE)
+                    .with_texture(tex.id(), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0))),
+            );
             if let Some(app) = status.as_ref().filter(|s| s.app_waiting).and_then(|s| s.capturing_app.clone()) {
                 let text = format!("Waiting for {app}...");
                 ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(15.0), Color32::from_gray(170));
@@ -511,6 +519,21 @@ impl LiveTab {
 }
 
 /// A white card with a bold title (the Daylight look).
+/// The preview's shape: the last frame's size, else the resolution the
+/// core reports ("1920x1080"), else 16:9 (so the box doesn't change shape
+/// when the first frame arrives).
+fn preview_aspect(frame: (u32, u32), resolution: Option<&str>) -> (f32, f32) {
+    if frame.0 > 0 && frame.1 > 0 {
+        return (frame.0 as f32, frame.1 as f32);
+    }
+    let parsed = resolution.and_then(|r| {
+        let (w, h) = r.split_once('x')?;
+        let (w, h): (f32, f32) = (w.trim().parse().ok()?, h.trim().parse().ok()?);
+        (w > 0.0 && h > 0.0).then_some((w, h))
+    });
+    parsed.unwrap_or((16.0, 9.0))
+}
+
 fn card(ui: &mut egui::Ui, shared: &mut Shared, title: &str, add: impl FnOnce(&mut egui::Ui, &mut Shared)) {
     let c = shared.theme.colors.clone();
     egui::Frame::new()
@@ -586,4 +609,17 @@ pub(super) fn read_png(path: &Path) -> Option<(u32, u32, Vec<u8>)> {
         _ => return None,
     };
     Some((w, h, rgba))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::preview_aspect;
+
+    #[test]
+    fn the_preview_takes_the_pictures_shape() {
+        assert_eq!(preview_aspect((1280, 1024), Some("1920x1080")), (1280.0, 1024.0));
+        assert_eq!(preview_aspect((0, 0), Some("1920x1080")), (1920.0, 1080.0));
+        assert_eq!(preview_aspect((0, 0), Some("")), (16.0, 9.0));
+        assert_eq!(preview_aspect((0, 0), None), (16.0, 9.0));
+    }
 }

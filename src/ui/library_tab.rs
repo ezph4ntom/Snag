@@ -45,9 +45,20 @@ struct Clip {
     day: i64,
     /// "Clip" / "Recording" for Snag's own files, else "".
     kind: &'static str,
-    trimmed: bool,
+    /// "Trimmed" / "Edited" for the trimmer's and editor's files.
+    tag: Option<&'static str>,
     /// Index into `Library::collections`; None = the clips folder.
     collection: Option<usize>,
+}
+
+/// A clip offered in the editor's "Add clip" list.
+pub struct ClipChoice {
+    pub path: PathBuf,
+    /// The game (title tag), else the file name.
+    pub name: String,
+    /// "Yesterday 19:09 · 2:01 · 261 MB".
+    pub detail: String,
+    pub thumb: Option<egui::TextureHandle>,
 }
 
 /// Length and game of a clip (from ffprobe), cached across runs.
@@ -276,6 +287,40 @@ impl LibraryTab {
         }
     }
 
+    /// Keeps the clip list fresh while the library isn't on screen (for the
+    /// editor's "Add clip" list, at most every 3 seconds) and makes the
+    /// newest clips' thumbnails, which that list shows.
+    pub fn refresh_list(&mut self, ctx: &egui::Context, shared: &Shared) {
+        if self.last_scan.is_none_or(|t| t.elapsed() > Duration::from_secs(3)) {
+            self.scan(shared);
+        }
+        self.collect(ctx);
+        let wanted: Vec<(PathBuf, Ident)> = self
+            .newest_videos()
+            .into_iter()
+            .take(40)
+            .filter(|c| !self.thumbs.contains_key(&c.path))
+            .map(|c| (c.path.clone(), (c.stamp, c.size)))
+            .collect();
+        for (path, ident) in wanted {
+            self.thumbs.insert(path.clone(), Slot::Pending);
+            self.thumb_ident.insert(path.clone(), ident);
+            let (tx, _) = self.worker.get_or_insert_with(start_worker);
+            let _ = tx.send(Req::Thumb(path, ident));
+        }
+    }
+
+    /// The videos, newest first.
+    fn newest_videos(&self) -> Vec<&Clip> {
+        let mut list: Vec<&Clip> = self
+            .clips
+            .iter()
+            .filter(|c| c.path.extension().is_some_and(|x| ["mp4", "mkv", "mov", "m4v"].iter().any(|v| x.eq_ignore_ascii_case(v))))
+            .collect();
+        list.sort_by_key(|c| std::cmp::Reverse((c.when.day_number(), c.when.hour, c.when.minute, c.stamp)));
+        list
+    }
+
     fn scan(&mut self, shared: &Shared) {
         self.last_scan = Some(Instant::now());
         let mut dirs: Vec<(PathBuf, Option<usize>)> = vec![(shared.settings.clips_dir.clone(), None)];
@@ -305,7 +350,13 @@ impl LibraryTab {
                 };
                 let stem = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
                 clips.push(Clip {
-                    trimmed: stem.contains("_trim"),
+                    tag: if stem.contains("_edit") {
+                        Some("Edited")
+                    } else if stem.contains("_trim") {
+                        Some("Trimmed")
+                    } else {
+                        None
+                    },
                     path,
                     name,
                     size: meta.len(),
@@ -408,6 +459,31 @@ impl LibraryTab {
 
     fn seconds(&self, c: &Clip) -> Option<f64> {
         self.meta.get(&c.path).filter(|m| m.stamp == c.stamp && m.size == c.size).and_then(|m| m.seconds)
+    }
+
+    /// The videos in the library, newest first, for the editor's "Add clip".
+    pub fn clip_choices(&self) -> Vec<ClipChoice> {
+        let today = LocalTime::now().day_number();
+        self.newest_videos()
+            .into_iter()
+            .map(|c| {
+                let title = self.meta.get(&c.path).and_then(|m| m.title.clone());
+                let stem = c.path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+                let mut detail = format!("{} {:02}:{:02}", day_label(&c.when, today), c.when.hour, c.when.minute);
+                if let Some(s) = self.seconds(c) {
+                    detail += &format!(" · {}", fmt_duration(s));
+                }
+                detail += &format!(" · {}", fmt_bytes(c.size));
+                if title.is_some() {
+                    detail += &format!(" · {stem}");
+                }
+                let thumb = match self.thumbs.get(&c.path) {
+                    Some(Slot::Ready(t, _)) => Some(t.clone()),
+                    _ => None,
+                };
+                ClipChoice { path: c.path.clone(), name: title.unwrap_or(stem), detail, thumb }
+            })
+            .collect()
     }
 
     // ---- the Clips tab ------------------------------------------------------
@@ -810,7 +886,7 @@ impl LibraryTab {
         let path = clip.path.clone();
         let seconds = self.seconds(clip);
         let favorite = self.store.favorites.contains(&path);
-        let (trimmed, ident) = (clip.trimmed, (clip.stamp, clip.size));
+        let (tag, ident) = (clip.tag, (clip.stamp, clip.size));
         let can_delete = clip.collection.is_none();
         let radius = if small { 6.0 } else { 10.0 };
 
@@ -856,8 +932,8 @@ impl LibraryTab {
                 p.rect_filled(b, 5.0, Color32::from_black_alpha(185));
                 p.galley(b.min + vec2(5.0, 2.0), badge, Color32::WHITE);
             }
-            if trimmed {
-                let tag = p.layout_no_wrap("Trimmed".into(), egui::FontId::proportional(10.5), Color32::WHITE);
+            if let Some(tag) = tag {
+                let tag = p.layout_no_wrap(tag.into(), egui::FontId::proportional(10.5), Color32::WHITE);
                 let b = Rect::from_min_size(pos2(rect.right() - tag.size().x - 18.0, rect.top() + 10.0), tag.size() + vec2(10.0, 4.0));
                 p.rect_filled(b, 5.0, Color32::from_black_alpha(160));
                 p.galley(b.min + vec2(5.0, 2.0), tag, Color32::WHITE);
@@ -1622,15 +1698,21 @@ fn segment(ui: &mut egui::Ui, theme: &crate::themes::Theme, name: &str, count: u
         p.rect_filled(rect, 15.0, c.widget_hover.0);
     }
     let fg = if selected { c.accent.0 } else { c.text.0 };
-    let a = p.layout_no_wrap(name.to_string(), egui::FontId::new(theme.fonts.body + 1.0, crate::themes::brand_bold_family()), fg);
+    let name_font = egui::FontId::new(theme.fonts.body + 1.0, crate::themes::brand_bold_family());
+    let a = p.layout_no_wrap(name.to_string(), name_font.clone(), fg);
     let b = p.layout_no_wrap(count.to_string(), egui::FontId::proportional(theme.fonts.body - 1.0), c.text_dim.0);
     let w = if hovered { a.size().x + 7.0 + b.size().x } else { a.size().x };
     let x = rect.center().x - w / 2.0;
     let aw = a.size().x;
-    let ay = rect.center().y - a.size().y / 2.0;
+    // Centered by what's drawn, not by the text boxes (two fonts, two
+    // sizes): the name's capital letters and the number's digits share
+    // the pill's middle line.
+    let caps = p.layout_no_wrap("H".into(), name_font, fg).mesh_bounds.center().y;
+    let ay = rect.center().y - caps;
     p.galley(pos2(x, ay), a, fg);
     if hovered {
-        p.galley(pos2(x + aw + 7.0, rect.center().y - b.size().y / 2.0 + 1.0), b, c.text_dim.0);
+        let by = rect.center().y - b.mesh_bounds.center().y;
+        p.galley(pos2(x + aw + 7.0, by), b, c.text_dim.0);
     }
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
