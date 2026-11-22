@@ -1,9 +1,11 @@
 //! Live tab: what's being recorded right now, and the main buttons.
 //!
-//! Left: status, the live preview (switchable off: then no preview frames
-//! are made at all), and Save clip / Screenshot / Record / Stop buffer.
-//! Right: "Sources" (what is recorded: a monitor, or only one app),
-//! "Sound in clips" (quick volume sliders) and the latest clips.
+//! Left: status with the replay buffer's on/off switch, the live preview
+//! (switchable off: then no preview frames are made at all), three tiles
+//! (Save clip / Screenshot / Record) and the latest clips in a row (left
+//! out when the window is too small for it and a decent preview).
+//! Right: "Sources" (what is recorded: a monitor, or only one app) and
+//! "Sound in clips" (quick volume sliders).
 //!
 //! The preview picture comes from the core's recorder (see
 //! `capture::preview`), so it shows exactly the monitor being captured and
@@ -86,17 +88,13 @@ impl LiveTab {
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = gap;
             ui.allocate_ui_with_layout(vec2(left_w, avail.y), egui::Layout::top_down(egui::Align::Min), |ui| {
-                self.main_column(ui, shared);
+                action = self.main_column(ui, shared);
             });
             ui.allocate_ui_with_layout(vec2(right_w, avail.y), egui::Layout::top_down(egui::Align::Min), |ui| {
                 egui::ScrollArea::vertical().id_salt("live-side").auto_shrink([false, false]).show(ui, |ui| {
                     self.sources(ui, shared);
                     ui.add_space(14.0);
                     card(ui, shared, "Sound in clips", |ui, shared| sound.compact(ui, shared));
-                    ui.add_space(14.0);
-                    if let Some(a) = self.recent_clips(ui, shared) {
-                        action = Some(a);
-                    }
                 });
             });
         });
@@ -223,14 +221,15 @@ impl LiveTab {
         }
     }
 
-    fn main_column(&mut self, ui: &mut egui::Ui, shared: &mut Shared) {
+    fn main_column(&mut self, ui: &mut egui::Ui, shared: &mut Shared) -> Option<LiveAction> {
         let status = shared.status.clone().filter(|_| shared.connected);
         let c = shared.theme.colors.clone();
         let theme = shared.theme.clone();
+        let recording = status.as_ref().is_some_and(|s| s.recording);
 
-        // Status line: the pill; "Hide preview" keeps its own room on the
-        // right; the dropped count always shows in full; the "what's
-        // recorded" text gets the rest, cut with "…" (full text on hover).
+        // Status line: the pill and the buffer switch; "Hide preview" keeps
+        // its own room on the right; the dropped count always shows in
+        // full; the "what's recorded" text gets the rest, cut with "…".
         ui.horizontal(|ui| {
             match &status {
                 Some(s) if s.rec_active => {
@@ -247,13 +246,22 @@ impl LiveTab {
                     status_pill(ui, &theme, c.text_dim.0, "Not running", None);
                 }
             }
+            if status.is_some() {
+                let tip = if recording {
+                    format!("Turn the replay buffer off (it keeps the last {} so you can save it)", fmt_duration(shared.settings.buffer_seconds as f64))
+                } else {
+                    "Turn the replay buffer on".to_string()
+                };
+                if switch(ui, &theme, recording, "Replay buffer").on_hover_text(tip).clicked() {
+                    shared.outbox.push(UiToCore::ToggleBuffer);
+                }
+            }
             let info = status.as_ref().filter(|s| s.recording).map(|s| {
                 let monitor = match &s.capturing_app {
                     Some(app) => app.clone(),
                     None => s.monitor.split_whitespace().next().unwrap_or("").to_string(),
                 };
-                let text = format!("{monitor} · {} · {} fps · last {} s kept", s.resolution, s.fps, shared.settings.buffer_seconds);
-                (text, s.frames_dropped)
+                (format!("{monitor} · {} · {} fps", s.resolution, s.fps), s.frames_dropped)
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let label = if shared.settings.ui.live_preview { "Hide preview" } else { "Show preview" };
@@ -262,7 +270,7 @@ impl LiveTab {
                     shared.mark_dirty();
                 }
                 let Some((text, dropped)) = info else { return };
-                // The space between the pill and "Hide preview", left to right.
+                // The space between the switch and "Hide preview", left to right.
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     let dropped = (dropped > 0).then(|| RichText::new(format!("{dropped} dropped")).color(c.warning.0));
                     let dropped_w = dropped.as_ref().map_or(0.0, |d| {
@@ -281,45 +289,23 @@ impl LiveTab {
         });
         ui.add_space(12.0);
 
-        // The buttons' labels, chosen before the preview so its height can
-        // leave room for them: with hotkeys when they fit on one row, then
-        // without (hotkeys on hover), then on two rows.
-        let buttons_h = 44.0;
-        let keys = shared.settings.hotkeys.clone();
-        let show = |k: &str| crate::hotkeys::display(k);
-        let recording = status.as_ref().is_some_and(|s| s.recording);
-        let session = status.as_ref().is_some_and(|s| s.rec_session_mode);
-        let (rec_label, rec_key) = match &status {
-            Some(s) if s.rec_active && !s.rec_session_mode => (format!("Stop recording · {}", fmt_duration(s.rec_seconds)), None),
-            Some(s) if s.rec_session_mode && s.rec_active => ("Save session".to_string(), Some(show(&keys.record))),
-            Some(s) if s.rec_session_mode => ("Start session recording".to_string(), Some(show(&keys.record))),
-            _ => ("Start recording".to_string(), Some(show(&keys.record))),
-        };
-        let stop_label = if recording { "Stop buffer" } else { "Start buffer" };
-        let with_key = |label: &str, key: Option<&String>| match key {
-            Some(k) => format!("{label} · {k}"),
-            None => label.to_string(),
-        };
-        let (clip_key, shot_key) = (show(&keys.clip), show(&keys.screenshot));
-        let row_w = |ui: &egui::Ui, with_keys: bool| {
-            let k = |key: &String| if with_keys { Some(key.clone()) } else { None };
-            let labels = [
-                with_key("Save clip", k(&clip_key).as_ref()),
-                with_key("Screenshot", k(&shot_key).as_ref()),
-                format!("     {}", with_key(&rec_label, rec_key.as_ref().and_then(k).as_ref())),
-                stop_label.to_string(),
-            ];
-            labels.iter().map(|l| super::widgets::button_width(ui, l.as_str())).sum::<f32>() + 3.0 * 10.0
-        };
-        let avail_w = ui.available_width();
-        let keys_shown = row_w(ui, true) <= avail_w;
-        let two_rows = !keys_shown && row_w(ui, false) > avail_w;
-        let buttons_total_h = if two_rows { 2.0 * buttons_h + 10.0 } else { buttons_h };
+        // Heights, decided before the preview so it can leave room: the
+        // tiles always; the recent clips row only while the preview stays
+        // at least MIN_PREVIEW tall (on small windows the preview wins).
+        const TILES_H: f32 = 60.0;
+        const GAP: f32 = 12.0;
+        const MIN_PREVIEW: f32 = 170.0;
+        let w = ui.available_width();
+        let thumbs = (((w + THUMB_GAP) / 150.0).floor() as usize).clamp(3, MAX_RECENT);
+        let thumb_w = (w - THUMB_GAP * (thumbs - 1) as f32) / thumbs as f32;
+        let strip_h = STRIP_HEAD_H + thumb_w * 9.0 / 16.0 + THUMB_NAME_H;
+        let avail_h = ui.available_height();
+        let show_strip = avail_h - TILES_H - GAP - (GAP + 6.0) - strip_h >= MIN_PREVIEW;
+        let below = TILES_H + GAP + if show_strip { GAP + 6.0 + strip_h } else { 0.0 };
 
         // The preview: exactly the recorded picture's shape (no black bars
-        // around it that could look like part of the clip), as big as fits
-        // above the buttons, which follow right under it.
-        let area = vec2(ui.available_width(), (ui.available_height() - buttons_total_h - 16.0).max(120.0));
+        // around it that could look like part of the clip).
+        let area = vec2(w, (avail_h - below).max(120.0));
         let (pw, ph) = preview_aspect(self.size, status.as_ref().map(|s| s.resolution.as_str()));
         let scale = (area.x / pw).min(area.y / ph);
         let box_size = vec2((pw * scale).round(), (ph * scale).round());
@@ -356,65 +342,72 @@ impl LiveTab {
             };
             ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(15.0), Color32::from_gray(170));
         }
-        ui.add_space(16.0);
+        ui.add_space(GAP);
 
-        // Buttons.
-        use super::widgets::{Glyph, glyph_button};
-        let h = egui::vec2(0.0, buttons_h);
+        // The three tiles: Save clip (wider), Screenshot, Record.
+        let keys = shared.settings.hotkeys.clone();
+        let show = |k: &str| crate::hotkeys::display(k);
+        let session = status.as_ref().is_some_and(|s| s.rec_session_mode);
+        let rec_active = status.as_ref().is_some_and(|s| s.rec_active);
         let red = c.error.0;
-        let rec_active = status.as_ref().is_some_and(|s| s.rec_active && !s.rec_session_mode);
-        let (glyph, fill, fg) = if rec_active { (Glyph::Square(Color32::WHITE), Some(red), Color32::WHITE) } else { (Glyph::Dot(red), None, c.text.0) };
-        // A hotkey left out of a label shows on hover instead.
-        let key_on_hover = |r: egui::Response, key: &String| if keys_shown { r } else { r.on_hover_text(format!("Hotkey: {key}")) };
-        let rec_tip = if session {
-            "Whole-session mode: Snag records everything; this saves the session so far and keeps recording."
-        } else {
-            "Records until you press Stop, then saves the whole recording."
-        };
-        let rec_tip = match (&rec_key, keys_shown) {
-            (Some(k), false) => format!("{rec_tip}\nHotkey: {k}"),
-            _ => rec_tip.to_string(),
-        };
-        let first_row = |ui: &mut egui::Ui, shared: &mut Shared| {
-            let save = egui::Button::new(RichText::new(with_key("Save clip", keys_shown.then_some(&clip_key))).color(c.accent_text.0).strong())
-                .fill(c.accent.0)
-                .min_size(h);
-            if key_on_hover(ui.add_enabled(recording, save), &clip_key).clicked() {
-                shared.outbox.push(UiToCore::SaveClip);
-            }
-            let shot = egui::Button::new(with_key("Screenshot", keys_shown.then_some(&shot_key))).min_size(h);
-            if key_on_hover(ui.add(shot), &shot_key).clicked() {
-                shared.outbox.push(UiToCore::Screenshot);
-            }
-        };
-        let second_row = |ui: &mut egui::Ui, shared: &mut Shared| {
-            let label = with_key(&rec_label, rec_key.as_ref().filter(|_| keys_shown));
-            let resp = ui.add_enabled_ui(shared.connected, |ui| glyph_button(ui, glyph, &label, fg, fill, h)).inner;
-            if resp.on_hover_text(&rec_tip).clicked() {
-                shared.outbox.push(UiToCore::Record);
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add_enabled(shared.connected, egui::Button::new(stop_label).min_size(h)).clicked() {
-                    shared.outbox.push(UiToCore::ToggleBuffer);
+        let unit = (w - 2.0 * GAP) / 3.5;
+        let mut save_clip = false;
+        let mut screenshot = false;
+        let mut record = false;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = GAP;
+            let held = fmt_duration(shared.settings.buffer_seconds as f64);
+            let save = Tile {
+                title: "Save clip",
+                sub: Some(if recording { format!("Saves the last {held}") } else { "The buffer is off".to_string() }),
+                key: Some(show(&keys.clip)),
+                glyph: None,
+                fill: Some(c.accent.0),
+                fg: c.accent_text.0,
+                enabled: recording,
+            };
+            let tip = if recording { format!("Save the last {held} as a clip") } else { "Turn the replay buffer on to save clips".to_string() };
+            save_clip = tile(ui, &theme, vec2(unit * 1.5, TILES_H), save).on_hover_text(tip).clicked();
+
+            let shot = Tile { title: "Screenshot", sub: None, key: Some(show(&keys.screenshot)), glyph: None, fill: None, fg: c.text.0, enabled: true };
+            screenshot = tile(ui, &theme, vec2(unit, TILES_H), shot).on_hover_text("Save a picture of the screen being recorded").clicked();
+
+            let (title, sub, glyph, fill, fg) = match &status {
+                Some(s) if s.rec_active && !session => {
+                    ("Stop recording", Some(fmt_duration(s.rec_seconds)), Glyph::Square(Color32::WHITE), Some(red), Color32::WHITE)
                 }
-            });
-        };
-        if two_rows {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 10.0;
-                first_row(ui, shared);
-            });
-            ui.add_space((10.0 - ui.spacing().item_spacing.y).max(0.0));
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 10.0;
-                second_row(ui, shared);
-            });
+                Some(s) if session && s.rec_active => ("Save session", None, Glyph::Dot(red), None, c.text.0),
+                _ if session => ("Start session", None, Glyph::Dot(red), None, c.text.0),
+                _ => ("Record", None, Glyph::Dot(red), None, c.text.0),
+            };
+            let key = (!(rec_active && !session)).then(|| show(&keys.record));
+            let rec = Tile { title, sub, key, glyph: Some(glyph), fill, fg, enabled: shared.connected };
+            let tip = if session {
+                "Whole-session mode: Snag records everything; this saves the session so far and keeps recording."
+            } else if rec_active {
+                "Stop and save the recording"
+            } else {
+                "Records until you press Stop, then saves the whole recording."
+            };
+            record = tile(ui, &theme, vec2(unit, TILES_H), rec).on_hover_text(tip).clicked();
+        });
+        if save_clip {
+            shared.outbox.push(UiToCore::SaveClip);
+        }
+        if screenshot {
+            shared.outbox.push(UiToCore::Screenshot);
+        }
+        if record {
+            shared.outbox.push(UiToCore::Record);
+        }
+
+        if show_strip {
+            ui.add_space(GAP + 6.0);
+            self.filmstrip(ui, shared, thumbs, thumb_w)
         } else {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 10.0;
-                first_row(ui, shared);
-                second_row(ui, shared);
-            });
+            // Keep the list fresh for when the window grows again.
+            self.refresh_recent(ui.ctx(), shared);
+            None
         }
     }
 
@@ -423,60 +416,64 @@ impl LiveTab {
         self.last_scan = None;
     }
 
-    /// The latest clips with thumbnails; clicking one opens it.
-    fn recent_clips(&mut self, ui: &mut egui::Ui, shared: &mut Shared) -> Option<LiveAction> {
+    fn refresh_recent(&mut self, ctx: &egui::Context, shared: &Shared) {
         if self.last_scan.is_none_or(|t| t.elapsed() > Duration::from_secs(4)) {
             self.scan(&shared.settings.clips_dir);
         }
-        self.collect_thumbs(ui.ctx());
+        self.collect_thumbs(ctx);
+    }
+
+    /// "Recent clips": the newest `count` clips in a row, `thumb_w` wide;
+    /// clicking one opens it in the editor.
+    fn filmstrip(&mut self, ui: &mut egui::Ui, shared: &mut Shared, count: usize, thumb_w: f32) -> Option<LiveAction> {
+        self.refresh_recent(ui.ctx(), shared);
         let mut action = None;
         let c = shared.theme.colors.clone();
-        card(ui, shared, "Recent clips", |ui, shared| {
-            if self.recent.is_empty() {
-                ui.label(dim(shared, "Clips you save show up here."));
-                return;
-            }
-            let col_w = (ui.available_width() - 10.0) / 2.0;
-            egui::Grid::new("recent").num_columns(2).spacing([10.0, 10.0]).show(ui, |ui| {
-                for (i, r) in self.recent.iter().enumerate() {
-                    let (tex, secs) = self.thumbs.get(&r.path).cloned().unwrap_or((None, None));
-                    let resp = ui
-                        .allocate_ui_with_layout(vec2(col_w, col_w * 9.0 / 16.0 + 26.0), egui::Layout::top_down(egui::Align::Min), |ui| {
-                            let (rect, resp) = ui.allocate_exact_size(vec2(col_w, col_w * 9.0 / 16.0), Sense::click());
-                            ui.painter().rect_filled(rect, 8.0, c.preview.0);
-                            if let Some(t) = &tex {
-                                ui.painter().image(t.id(), rect.shrink(0.5), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
-                            }
-                            if let Some(s) = secs {
-                                let badge = ui.painter().layout_no_wrap(fmt_duration(s), egui::FontId::proportional(11.0), Color32::WHITE);
-                                let b = Rect::from_min_size(rect.max - badge.size() - vec2(12.0, 8.0), badge.size() + vec2(8.0, 2.0));
-                                ui.painter().rect_filled(b, 4.0, Color32::from_black_alpha(180));
-                                ui.painter().galley(b.min + vec2(4.0, 1.0), badge, Color32::WHITE);
-                            }
-                            if resp.hovered() {
-                                ui.painter().rect_stroke(rect, 8.0, egui::Stroke::new(2.0, c.accent.0), egui::StrokeKind::Inside);
-                            }
-                            ui.add(egui::Label::new(RichText::new(&r.name).size(12.5)).truncate());
-                            resp
-                        })
-                        .inner;
-                    if resp.on_hover_text("Open in the trimmer").on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                        action = Some(LiveAction::OpenClip(r.path.clone()));
-                    }
-                    if i % 2 == 1 {
-                        ui.end_row();
-                    }
+        ui.allocate_ui_with_layout(vec2(ui.available_width(), STRIP_HEAD_H), egui::Layout::left_to_right(egui::Align::Min), |ui| {
+            ui.label(RichText::new("Recent clips").family(crate::themes::brand_bold_family()).size(shared.theme.fonts.body + 1.0));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                if ui.link("See all").on_hover_text("Open the Clips tab").clicked() {
+                    action = Some(LiveAction::ShowClips);
                 }
             });
-            ui.add_space(4.0);
-            if ui.link("See all clips").clicked() {
-                action = Some(LiveAction::ShowClips);
+        });
+        if self.recent.is_empty() {
+            ui.label(dim(shared, "Clips you save show up here."));
+            return action;
+        }
+        let thumb = vec2(thumb_w, thumb_w * 9.0 / 16.0);
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = THUMB_GAP;
+            for r in self.recent.iter().take(count) {
+                let (tex, secs) = self.thumbs.get(&r.path).cloned().unwrap_or((None, None));
+                let (cell, resp) = ui.allocate_exact_size(vec2(thumb_w, thumb.y + THUMB_NAME_H), Sense::click());
+                resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &r.name));
+                let p = ui.painter();
+                let rect = Rect::from_min_size(cell.min, thumb);
+                p.rect_filled(rect, 8.0, c.preview.0);
+                if let Some(t) = &tex {
+                    p.add(egui::epaint::RectShape::filled(rect, 8.0, Color32::WHITE).with_texture(t.id(), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0))));
+                }
+                if let Some(s) = secs {
+                    let badge = p.layout_no_wrap(fmt_duration(s), egui::FontId::proportional(11.0), Color32::WHITE);
+                    let b = Rect::from_min_size(rect.max - badge.size() - vec2(12.0, 8.0), badge.size() + vec2(8.0, 2.0));
+                    p.rect_filled(b, 4.0, Color32::from_black_alpha(180));
+                    p.galley(b.min + vec2(4.0, 1.0), badge, Color32::WHITE);
+                }
+                if resp.hovered() {
+                    p.rect_stroke(rect, 8.0, egui::Stroke::new(2.0, c.accent.0), egui::StrokeKind::Inside);
+                }
+                let name = super::widgets::one_line(p, r.name.clone(), egui::FontId::proportional(12.0), c.text_dim.0, thumb_w);
+                p.galley(pos2(cell.left(), rect.bottom() + 4.0), name, c.text_dim.0);
+                if resp.on_hover_text("Open in the editor").on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    action = Some(LiveAction::OpenClip(r.path.clone()));
+                }
             }
         });
         action
     }
 
-    /// The 4 newest videos in the clips folder.
+    /// The newest videos in the clips folder (up to MAX_RECENT).
     fn scan(&mut self, dir: &Path) {
         self.last_scan = Some(Instant::now());
         let mut files: Vec<(SystemTime, PathBuf)> = std::fs::read_dir(dir)
@@ -489,7 +486,7 @@ impl LiveTab {
         files.sort_by_key(|f| std::cmp::Reverse(f.0));
         self.recent = files
             .into_iter()
-            .take(4)
+            .take(MAX_RECENT)
             .map(|(_, path)| Recent { name: path.file_stem().unwrap_or_default().to_string_lossy().into_owned(), path })
             .collect();
         // Forget thumbnails of clips that dropped off the list.
@@ -518,7 +515,6 @@ impl LiveTab {
     }
 }
 
-/// A white card with a bold title (the Daylight look).
 /// The preview's shape: the last frame's size, else the resolution the
 /// core reports ("1920x1080"), else 16:9 (so the box doesn't change shape
 /// when the first frame arrives).
@@ -534,6 +530,116 @@ fn preview_aspect(frame: (u32, u32), resolution: Option<&str>) -> (f32, f32) {
     parsed.unwrap_or((16.0, 9.0))
 }
 
+/// Recent clips: at most this many, and the spacing / text heights of
+/// their row.
+const MAX_RECENT: usize = 6;
+const THUMB_GAP: f32 = 10.0;
+const STRIP_HEAD_H: f32 = 28.0;
+const THUMB_NAME_H: f32 = 22.0;
+
+enum Glyph {
+    Dot(Color32),
+    Square(Color32),
+}
+
+/// One of the big action tiles under the preview.
+struct Tile<'a> {
+    title: &'a str,
+    /// Second line ("Saves the last 2:00"), before the hotkey.
+    sub: Option<String>,
+    /// The hotkey, drawn as a key cap.
+    key: Option<String>,
+    glyph: Option<Glyph>,
+    /// Background (else the theme's button color).
+    fill: Option<Color32>,
+    fg: Color32,
+    enabled: bool,
+}
+
+/// Draws a tile: title (with an optional dot/square) on top, then the
+/// second line and the hotkey cap; text is cut with "…" to fit.
+fn tile(ui: &mut egui::Ui, theme: &crate::themes::Theme, size: egui::Vec2, t: Tile) -> egui::Response {
+    let c = &theme.colors;
+    let (rect, resp) = ui.allocate_exact_size(size, if t.enabled { Sense::click() } else { Sense::hover() });
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, t.enabled, t.title));
+    let hovered = t.enabled && resp.hovered();
+    let fade = |col: Color32| if t.enabled { col } else { col.gamma_multiply(0.45) };
+    let radius = CornerRadius::same((theme.corner_radius * 1.5) as u8);
+    let p = ui.painter();
+    match t.fill {
+        Some(f) => {
+            p.rect_filled(rect, radius, fade(if hovered { f.lerp_to_gamma(Color32::WHITE, 0.12) } else { f }));
+        }
+        None => {
+            p.rect_filled(rect, radius, if hovered { c.widget_hover.0 } else { c.widget.0 });
+            p.rect_stroke(rect, radius, egui::Stroke::new(1.0, c.border.0), egui::StrokeKind::Inside);
+        }
+    }
+    let pad = 14.0;
+    let fg = fade(t.fg);
+    let sub_fg = fade(if t.fill.is_some() { t.fg.gamma_multiply(0.8) } else { c.text_dim.0 });
+    let two_lines = t.sub.is_some() || t.key.is_some();
+    let title_y = if two_lines { rect.center().y - 10.0 } else { rect.center().y };
+    let mut x = rect.left() + pad;
+    if let Some(g) = &t.glyph {
+        let at = pos2(x + 5.0, title_y);
+        match g {
+            Glyph::Dot(col) => {
+                p.circle_filled(at, 5.0, fade(*col));
+            }
+            Glyph::Square(col) => {
+                p.rect_filled(Rect::from_center_size(at, vec2(9.0, 9.0)), 1.5, fade(*col));
+            }
+        }
+        x += 18.0;
+    }
+    let room = (rect.right() - pad - x).max(10.0);
+    let font = egui::FontId::new(theme.fonts.body + 1.0, crate::themes::brand_bold_family());
+    let title = super::widgets::one_line(p, t.title.to_string(), font, fg, room);
+    p.galley(pos2(x, title_y - title.size().y / 2.0), title, fg);
+    if two_lines {
+        let y = rect.center().y + 11.0;
+        let mut x = rect.left() + pad;
+        let right = rect.right() - pad;
+        let small = egui::FontId::proportional(theme.fonts.body - 2.0);
+        // The key cap keeps its room; the text gets what's left.
+        let cap = t.key.map(|k| p.layout_no_wrap(k, egui::FontId::monospace(theme.fonts.body - 3.0), sub_fg));
+        let cap_w = cap.as_ref().map_or(0.0, |g| g.size().x + 10.0);
+        if let Some(sub) = t.sub {
+            let room = right - x - if cap_w > 0.0 { cap_w + 8.0 } else { 0.0 };
+            if room > 30.0 {
+                let g = super::widgets::one_line(p, sub, small, sub_fg, room);
+                let w = g.size().x;
+                p.galley(pos2(x, y - g.size().y / 2.0), g, sub_fg);
+                x += w + 8.0;
+            }
+        }
+        if let Some(g) = cap {
+            if x + cap_w <= right + 0.5 {
+                let r = Rect::from_min_size(pos2(x, y - g.size().y / 2.0 - 2.0), vec2(cap_w, g.size().y + 4.0));
+                p.rect_stroke(r, 4.0, egui::Stroke::new(1.0, sub_fg.gamma_multiply(0.6)), egui::StrokeKind::Inside);
+                p.galley(r.min + vec2(5.0, 2.0), g, sub_fg);
+            }
+        }
+    }
+    if t.enabled { resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp }
+}
+
+/// An on/off switch (the replay buffer's).
+fn switch(ui: &mut egui::Ui, theme: &crate::themes::Theme, on: bool, label: &str) -> egui::Response {
+    let c = &theme.colors;
+    let (rect, resp) = ui.allocate_exact_size(vec2(34.0, 18.0), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, true, on, label));
+    let track = if on { c.accent.0 } else { c.widget_active.0 };
+    let track = if resp.hovered() { track.lerp_to_gamma(Color32::WHITE, 0.1) } else { track };
+    let p = ui.painter();
+    p.rect_filled(rect, 9.0, track);
+    let knob_x = if on { rect.right() - 9.0 } else { rect.left() + 9.0 };
+    p.circle_filled(pos2(knob_x, rect.center().y), 6.5, if on { c.accent_text.0 } else { c.text.0 });
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// A white card with a bold title (the Daylight look).
 fn card(ui: &mut egui::Ui, shared: &mut Shared, title: &str, add: impl FnOnce(&mut egui::Ui, &mut Shared)) {
     let c = shared.theme.colors.clone();
     egui::Frame::new()

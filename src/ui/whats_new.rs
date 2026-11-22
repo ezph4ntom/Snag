@@ -26,6 +26,15 @@ pub struct Notes {
 /// Newest first. The top entry must be the current version (tested).
 pub const HISTORY: &[Notes] = &[
     Notes {
+        version: "0.7.6",
+        new: &[
+            "New Live tab: big Save clip, Screenshot and Record tiles with their hotkeys.",
+            "The replay buffer has an on/off switch next to its status.",
+            "Recent clips show in a row under the buttons.",
+        ],
+        fixed: &[],
+    },
+    Notes {
         version: "0.7.5",
         new: &[
             "Clip editor: split, cut parts out, reorder, and join clips (Add clip).",

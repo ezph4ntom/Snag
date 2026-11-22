@@ -244,13 +244,6 @@ fn fmt_time(t: f64) -> String {
     format!("{:02}:{:06.3}", m as u32, t - m * 60.0)
 }
 
-/// `text` on one line, cut with "…" to fit `width`.
-fn one_line(p: &egui::Painter, text: String, font: egui::FontId, color: Color32, width: f32) -> Arc<egui::Galley> {
-    let mut job = egui::text::LayoutJob::simple_singleline(text, font, color);
-    job.wrap = egui::text::TextWrapping::truncate_at_width(width);
-    p.layout_job(job)
-}
-
 /// "1:05.3", a moment in a clip.
 fn fmt_clock(t: f64) -> String {
     let t = (t.max(0.0) * 10.0).round() / 10.0;
@@ -774,8 +767,8 @@ impl TrimmerTab {
                         }
                         let x = thumb.right() + 12.0;
                         let w = (rect.right() - x - 8.0).max(10.0);
-                        let name = one_line(p, ch.name.clone(), egui::FontId::proportional(theme.fonts.body), c.text.0, w);
-                        let detail = one_line(p, ch.detail.clone(), egui::FontId::proportional(theme.fonts.body - 2.0), c.text_dim.0, w);
+                        let name = super::widgets::one_line(p, ch.name.clone(), egui::FontId::proportional(theme.fonts.body), c.text.0, w);
+                        let detail = super::widgets::one_line(p, ch.detail.clone(), egui::FontId::proportional(theme.fonts.body - 2.0), c.text_dim.0, w);
                         p.with_clip_rect(rect).galley(pos2(x, rect.top() + 8.0), name, c.text.0);
                         p.with_clip_rect(rect).galley(pos2(x, rect.top() + 28.0), detail, c.text_dim.0);
                         if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
@@ -1036,7 +1029,7 @@ fn pieces_strip(ui: &mut egui::Ui, l: &mut Loaded, colors: &crate::themes::Color
                 let probe = &piece.probe;
                 let name = probe.path.file_stem().unwrap_or_default().to_string_lossy().to_string();
                 let text_w = rect.width() - 16.0;
-                let head = one_line(&p, format!("{}  {name}", i + 1), egui::FontId::proportional(12.5), colors.text.0, text_w);
+                let head = super::widgets::one_line(&p, format!("{}  {name}", i + 1), egui::FontId::proportional(12.5), colors.text.0, text_w);
                 let first = piece.first(mode);
                 let sub = format!(
                     "{}\u{2013}{} · {}",
@@ -1044,7 +1037,7 @@ fn pieces_strip(ui: &mut egui::Ui, l: &mut Loaded, colors: &crate::themes::Color
                     fmt_clock(probe.time_of(piece.end) + probe.frame_duration()),
                     fmt_length(piece.seconds(mode))
                 );
-                let sub = one_line(&p, sub, egui::FontId::proportional(11.0), colors.text_dim.0, text_w);
+                let sub = super::widgets::one_line(&p, sub, egui::FontId::proportional(11.0), colors.text_dim.0, text_w);
                 let clip = rect.shrink2(vec2(8.0, 0.0));
                 p.with_clip_rect(clip).galley(rect.min + vec2(8.0, 8.0), head, colors.text.0);
                 p.with_clip_rect(clip).galley(rect.min + vec2(8.0, 28.0), sub, colors.text_dim.0);

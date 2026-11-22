@@ -150,32 +150,6 @@ pub fn fmt_bytes(bytes: u64) -> String {
     if bytes >= 1 << 30 { format!("{:.1} GB", bytes as f64 / (1u64 << 30) as f64) } else { format!("{:.0} MB", bytes as f64 / (1u64 << 20) as f64) }
 }
 
-/// A small shape painted at the start of a button (fonts don't have them).
-#[derive(Clone, Copy)]
-pub enum Glyph {
-    Dot(Color32),
-    Square(Color32),
-}
-
-/// A button with a painted dot/square before its text ("● Start recording").
-pub fn glyph_button(ui: &mut egui::Ui, glyph: Glyph, label: &str, fg: Color32, fill: Option<Color32>, min: Vec2) -> Response {
-    let mut b = egui::Button::new(egui::RichText::new(format!("     {label}")).color(fg)).min_size(min);
-    if let Some(f) = fill {
-        b = b.fill(f);
-    }
-    let resp = ui.add(b);
-    let c = pos2(resp.rect.left() + 20.0, resp.rect.center().y);
-    match glyph {
-        Glyph::Dot(col) => {
-            ui.painter().circle_filled(c, 5.0, col);
-        }
-        Glyph::Square(col) => {
-            ui.painter().rect_filled(Rect::from_center_size(c, vec2(9.0, 9.0)), 2.0, col);
-        }
-    }
-    resp
-}
-
 /// How wide `text` is on one line (no wrapping) in `style`.
 pub fn text_width(ui: &egui::Ui, text: impl Into<egui::WidgetText>, style: egui::TextStyle) -> f32 {
     text.into().into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, style).size().x
@@ -235,4 +209,11 @@ pub fn search_box(ui: &mut egui::Ui, theme: &Theme, text: &mut String, width: f3
         resp.request_focus();
     }
     resp
+}
+
+/// `text` on one line, cut with "…" to fit `width`.
+pub fn one_line(p: &egui::Painter, text: String, font: egui::FontId, color: Color32, width: f32) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::simple_singleline(text, font, color);
+    job.wrap = egui::text::TextWrapping::truncate_at_width(width);
+    p.layout_job(job)
 }
