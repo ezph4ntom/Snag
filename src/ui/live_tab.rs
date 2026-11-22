@@ -221,59 +221,6 @@ impl LiveTab {
         let theme = shared.theme.clone();
         let recording = status.as_ref().is_some_and(|s| s.recording);
 
-        // Status line: the pill, the buffer switch and what's recorded
-        // (right-click the preview to hide it).
-        ui.horizontal(|ui| {
-            match &status {
-                Some(s) if s.rec_active => {
-                    let what = if s.rec_session_mode { "Recording session" } else { "Recording" };
-                    status_pill(ui, &theme, c.error.0, &format!("{what} {}", fmt_duration(s.rec_seconds)), Some(c.error.0));
-                }
-                Some(s) if s.recording => {
-                    status_pill(ui, &theme, c.accent.0, "Replay buffer on", Some(c.accent.0));
-                }
-                Some(_) => {
-                    status_pill(ui, &theme, c.text_dim.0, "Buffer off", None);
-                }
-                None => {
-                    status_pill(ui, &theme, c.text_dim.0, "Not running", None);
-                }
-            }
-            if status.is_some() {
-                let tip = if recording {
-                    format!("Turn the replay buffer off (it keeps the last {} so you can save it)", fmt_duration(shared.settings.buffer_seconds as f64))
-                } else {
-                    "Turn the replay buffer on".to_string()
-                };
-                if switch(ui, &theme, recording, "Replay buffer").on_hover_text(tip).clicked() {
-                    shared.outbox.push(UiToCore::ToggleBuffer);
-                }
-            }
-            let info = status.as_ref().filter(|s| s.recording).map(|s| {
-                let monitor = match &s.capturing_app {
-                    Some(app) => app.clone(),
-                    None => s.monitor.split_whitespace().next().unwrap_or("").to_string(),
-                };
-                (format!("{monitor} · {} · {} fps", s.resolution, s.fps), s.frames_dropped)
-            });
-            let Some((text, dropped)) = info else { return };
-            // The rest of the row: the dropped count in full, the text cut
-            // with "…" to what's left.
-            let dropped = (dropped > 0).then(|| RichText::new(format!("{dropped} dropped")).color(c.warning.0));
-            let dropped_w = dropped.as_ref().map_or(0.0, |d| {
-                super::widgets::text_width(ui, d.clone(), egui::TextStyle::Body) + ui.spacing().item_spacing.x
-            });
-            let room = (ui.available_width() - dropped_w).max(0.0);
-            let row_h = ui.available_height();
-            ui.allocate_ui_with_layout(vec2(room, row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                ui.add(egui::Label::new(dim(shared, text)).truncate());
-            });
-            if let Some(d) = dropped {
-                ui.label(d).on_hover_text("Frames the recorder couldn't produce on time (see core.log)");
-            }
-        });
-        ui.add_space(12.0);
-
         // Proportional layout: the gap and the tiles' height follow the
         // window's height; the preview gets the rest at most, times the
         // size it was dragged to (`ui.live_preview_size`); the tiles are as
@@ -284,7 +231,7 @@ impl LiveTab {
         // egui's own spacing between the preview, the gap and the tiles.
         let spacing = 2.0 * ui.spacing().item_spacing.y;
         let tiles_h = (avail_h * 0.1).clamp(54.0, 84.0);
-        let max_area = vec2(w, (avail_h - tiles_h - gap - spacing).max(120.0));
+        let max_area = vec2(w, (avail_h - BAR_H - tiles_h - gap - spacing).max(120.0));
         let (pw, ph) = preview_aspect(self.size, status.as_ref().map(|s| s.resolution.as_str()));
         let fit = (max_area.x / pw).min(max_area.y / ph);
         let max_box = vec2(pw * fit, ph * fit);
@@ -293,15 +240,26 @@ impl LiveTab {
 
         // The preview and the tiles are one block; it and the right column
         // start at the same height, and the taller of the two is centered
-        // in the space below the status line (so a smaller preview stays
-        // balanced and the right column's cards never get pushed off).
-        let tallest = (box_size.y + gap + tiles_h + spacing).max(self.side_h);
+        // in the tab (so a smaller preview stays balanced and the right
+        // column's cards never get pushed off).
+        let tallest = (BAR_H + box_size.y + gap + tiles_h + spacing).max(self.side_h);
         ui.add_space(((avail_h - tallest) / 2.0).max(0.0).floor());
 
-        // The preview: exactly the recorded picture's shape (no black bars
-        // around it that could look like part of the clip).
-        let (row, _) = ui.allocate_exact_size(vec2(w, box_size.y), Sense::hover());
-        let rect = Rect::from_center_size(row.center(), box_size);
+        // The status bar sits on top of the preview, as one piece (as wide
+        // as the tiles); the preview is exactly the recorded picture's shape
+        // (no black bars around it that could look like part of the clip).
+        let row_w = box_size.x.max(440.0_f32.min(w));
+        let (row, _) = ui.allocate_exact_size(vec2(w, BAR_H + box_size.y), Sense::hover());
+        let bar = Rect::from_min_size(pos2(row.center().x - row_w / 2.0, row.top()), vec2(row_w, BAR_H));
+        let rect = Rect::from_center_size(pos2(row.center().x, bar.bottom() + box_size.y / 2.0), box_size);
+        let r = (shared.theme.corner_radius * 1.5) as u8;
+        let bar_radius = CornerRadius { nw: r, ne: r, sw: 0, se: 0 };
+        ui.painter().rect_filled(bar, bar_radius, c.panel.0);
+        ui.painter().rect_stroke(bar, bar_radius, egui::Stroke::new(1.0, c.border.0), egui::StrokeKind::Inside);
+        let mut bar_ui = ui.new_child(
+            egui::UiBuilder::new().max_rect(bar.shrink2(vec2(12.0, 0.0))).layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        status_bar(&mut bar_ui, shared, status.as_ref());
         // Right-click the preview to hide it (or show it again). Added
         // before what's drawn on it, so "Enable preview" and the resize grip
         // stay on top and keep their clicks.
@@ -319,7 +277,8 @@ impl LiveTab {
             shared.settings.ui.live_preview = !shared.settings.ui.live_preview;
             shared.mark_dirty();
         }
-        let radius = CornerRadius::same((shared.theme.corner_radius * 1.5) as u8);
+        // Square top corners where the bar joins it.
+        let radius = CornerRadius { nw: 0, ne: 0, sw: r, se: r };
         ui.painter().rect_filled(rect, radius, c.preview.0);
         if !shared.settings.ui.live_preview {
             let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::top_down(egui::Align::Center)));
@@ -362,7 +321,6 @@ impl LiveTab {
         let session = status.as_ref().is_some_and(|s| s.rec_session_mode);
         let rec_active = status.as_ref().is_some_and(|s| s.rec_active);
         let red = c.error.0;
-        let row_w = box_size.x.max(440.0_f32.min(w));
         let unit = (row_w - 2.0 * gap) / 3.5;
         let mut save_clip = false;
         let mut screenshot = false;
@@ -410,7 +368,7 @@ impl LiveTab {
         })
         .response
         .rect;
-        self.block = Some((rect.top(), tiles_row.bottom(), gap));
+        self.block = Some((bar.top(), tiles_row.bottom(), gap));
         if save_clip {
             shared.outbox.push(UiToCore::SaveClip);
         }
@@ -422,6 +380,57 @@ impl LiveTab {
         }
 
     }
+}
+
+/// Height of the status bar on top of the preview.
+const BAR_H: f32 = 40.0;
+
+/// The status bar's contents: the state pill and the buffer switch on the
+/// left; what's recorded (and any dropped frames) on the right, dim, cut
+/// with "…" when there's no room.
+fn status_bar(ui: &mut egui::Ui, shared: &mut Shared, status: Option<&crate::app::ipc::CoreStatus>) {
+    let c = shared.theme.colors.clone();
+    let theme = shared.theme.clone();
+    let recording = status.is_some_and(|s| s.recording);
+    match status {
+        Some(s) if s.rec_active => {
+            let what = if s.rec_session_mode { "Recording session" } else { "Recording" };
+            status_pill(ui, &theme, c.error.0, &format!("{what} {}", fmt_duration(s.rec_seconds)), Some(c.error.0));
+        }
+        Some(s) if s.recording => {
+            status_pill(ui, &theme, c.accent.0, "Replay buffer on", Some(c.accent.0));
+        }
+        Some(_) => {
+            status_pill(ui, &theme, c.text_dim.0, "Buffer off", None);
+        }
+        None => {
+            status_pill(ui, &theme, c.text_dim.0, "Not running", None);
+        }
+    }
+    if status.is_some() {
+        let tip = if recording {
+            format!("Turn the replay buffer off (it keeps the last {} so you can save it)", fmt_duration(shared.settings.buffer_seconds as f64))
+        } else {
+            "Turn the replay buffer on".to_string()
+        };
+        if switch(ui, &theme, recording, "Replay buffer").on_hover_text(tip).clicked() {
+            shared.outbox.push(UiToCore::ToggleBuffer);
+        }
+    }
+    let Some(s) = status.filter(|s| s.recording) else { return };
+    let source = match &s.capturing_app {
+        Some(app) => app.clone(),
+        None => s.monitor.split_whitespace().next().unwrap_or("").to_string(),
+    };
+    let text = format!("{source} · {} · {} fps", s.resolution, s.fps);
+    let dropped = s.frames_dropped;
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        if dropped > 0 {
+            ui.label(RichText::new(format!("{dropped} dropped")).color(c.warning.0))
+                .on_hover_text("Frames the recorder couldn't produce on time (see core.log)");
+        }
+        ui.add(egui::Label::new(dim(shared, text)).truncate());
+    });
 }
 
 /// The preview's shape: the last frame's size, else the resolution the

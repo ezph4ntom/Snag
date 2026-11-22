@@ -26,6 +26,11 @@ pub struct Notes {
 /// Newest first. The top entry must be the current version (tested).
 pub const HISTORY: &[Notes] = &[
     Notes {
+        version: "0.7.10",
+        new: &[],
+        fixed: &["Live tab: the status sits in a slim bar on top of the preview instead of the corner."],
+    },
+    Notes {
         version: "0.7.9",
         new: &["Right-click the live preview to hide it (the \"Hide preview\" link is gone)."],
         fixed: &["Skipped a few updates? This screen now shows everything since your old version."],
@@ -238,6 +243,9 @@ mod tests {
         assert_eq!(versions(to_show("", "0.7.2")), ["0.7.2"]);
         // A normal update: only the new version.
         assert_eq!(versions(to_show("0.7.8", "0.7.9")), ["0.7.9"]);
+        // Two-digit patch numbers count as numbers (0.7.10 is after 0.7.9).
+        assert_eq!(versions(to_show("0.7.9", "0.7.10")), ["0.7.10"]);
+        assert!(crate::update::is_newer("0.7.10", "0.7.9"));
         // Never the future.
         assert_eq!(versions(to_show("0.6.0", "0.7.1")), ["0.7.1", "0.7.0"]);
     }
