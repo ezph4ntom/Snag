@@ -104,7 +104,25 @@ pub struct Controller {
     restart_attempts: u32,
     last_status: Instant,
     settings_mtime: Option<std::time::SystemTime>,
+    /// ffmpeg wasn't found (yet): looking for it again now and then.
+    ffmpeg_missing: Option<FfmpegMissing>,
+    /// The buffer was asked to start while ffmpeg was missing: start it as
+    /// soon as ffmpeg is found.
+    start_when_ffmpeg: bool,
 }
+
+struct FfmpegMissing {
+    since: Instant,
+    checked: Instant,
+    /// The "install ffmpeg" dialog was shown.
+    told: bool,
+}
+
+/// How often to look for a missing ffmpeg, and how long to wait before
+/// telling the user (it may be getting installed or updated right now).
+const FFMPEG_RECHECK: Duration = Duration::from_secs(2);
+const FFMPEG_TELL_AFTER: Duration = Duration::from_secs(20);
+const WAITING_FOR_FFMPEG: &str = "Waiting for ffmpeg (Snag needs it to record): install it with  winget install Gyan.FFmpeg";
 
 impl Controller {
     pub fn new(settings: Settings, first_launch: bool, events: Sender<Event>) -> Controller {
@@ -150,6 +168,8 @@ impl Controller {
             restart_attempts: 0,
             last_status: Instant::now(),
             settings_mtime: Settings::file_mtime(),
+            ffmpeg_missing: None,
+            start_when_ffmpeg: false,
         }
     }
 
@@ -173,10 +193,85 @@ impl Controller {
     }
 
     fn startup(&mut self) {
-        // Detect and auto-tune on first launch, and re-detect whenever the
-        // saved results don't describe this PC any more: a different GPU
-        // (app moved to another PC, new graphics card), an older detection
-        // format, or no working encoder last time (ffmpeg was missing).
+        self.check_hardware();
+        if let Err(e) = crate::encode::detect::ffmpeg_version() {
+            // Maybe being installed or updated right now (winget): look
+            // again every few seconds and start once it's there. The user
+            // is told how to install it only if it stays missing.
+            log::warn!("ffmpeg not found ({e:#}); looking again every {} s", FFMPEG_RECHECK.as_secs());
+            self.note = WAITING_FOR_FFMPEG.into();
+            self.ffmpeg_missing = Some(FfmpegMissing { since: Instant::now(), checked: Instant::now(), told: false });
+        }
+        self.focused_monitor = foreground_monitor();
+        self.register_hotkeys();
+        // A recording left behind by a crash or power cut: save what it has.
+        let (events, out) = (self.events.clone(), self.settings.clips_dir.clone());
+        std::thread::spawn(move || {
+            for path in crate::buffer::recording::recover_leftovers(&out) {
+                let r = ClipResult { path, seconds: 0.0, segments: 0, bytes: 0, took: Duration::ZERO, warnings: Vec::new() };
+                let _ = events.send(Event::RecordingDone(Ok(r)));
+            }
+        });
+        self.want_recording = self.settings.recording.mode == RecordMode::WholeSession;
+        if self.settings.start_buffer_on_launch {
+            self.start_buffer();
+        }
+        self.update_tray();
+        if self.first_launch {
+            // Show what auto-tune chose and why.
+            self.open_ui("quality", None, true, false);
+        }
+    }
+
+    /// While ffmpeg is missing: look for it again every few seconds; once
+    /// found, finish what startup couldn't (encoder detection, the buffer).
+    /// Still missing after a while: tell the user how to install it, once.
+    fn wait_for_ffmpeg(&mut self) {
+        let Some(m) = &mut self.ffmpeg_missing else { return };
+        if m.checked.elapsed() < FFMPEG_RECHECK {
+            return;
+        }
+        m.checked = Instant::now();
+        if crate::encode::detect::ffmpeg_version().is_err() {
+            // Found but didn't run (moved, half-updated)? Search afresh next time.
+            crate::paths::forget_tools();
+            if !m.told && m.since.elapsed() >= FFMPEG_TELL_AFTER {
+                m.told = true;
+                log::error!("ffmpeg still not found after {} s", m.since.elapsed().as_secs());
+                // On its own thread: the dialog blocks until closed.
+                std::thread::spawn(|| {
+                    crate::win::error_box(
+                        "Snag needs ffmpeg to record, and it isn't installed.\n\n\
+                         To install it, open PowerShell (or Terminal) and run:\n\n\
+                             winget install Gyan.FFmpeg\n\n\
+                         Snag starts recording by itself once ffmpeg is installed.\n\
+                         (Or put ffmpeg.exe and ffprobe.exe in a \"bin\" folder next to snag.exe.)",
+                    );
+                });
+            }
+            return;
+        }
+        log::info!(
+            "ffmpeg found after {} s: {}",
+            m.since.elapsed().as_secs(),
+            crate::paths::ffmpeg_exe().display()
+        );
+        self.ffmpeg_missing = None;
+        // The encoders couldn't be tested without it.
+        self.check_hardware();
+        self.note = String::new();
+        if std::mem::take(&mut self.start_when_ffmpeg) {
+            self.restart_attempts = 0;
+            self.start_buffer();
+        }
+        self.update_tray();
+    }
+
+    /// Detect and auto-tune on first launch, and re-detect whenever the
+    /// saved results don't describe this PC any more: a different GPU (app
+    /// moved to another PC, new graphics card), an older detection format,
+    /// or no working encoder last time (ffmpeg was missing).
+    fn check_hardware(&mut self) {
         let gpus_now: Vec<String> = crate::tune::detect_gpus().into_iter().map(|g| g.name).collect();
         // Results that don't fit this PC at all: start over with a fresh
         // recommendation. An older detection format alone keeps the preset.
@@ -218,40 +313,6 @@ impl Controller {
                 );
                 self.settings.video.encoder = hw.encoders[0];
             }
-        }
-        if let Err(e) = crate::encode::detect::ffmpeg_version() {
-            self.note = "ffmpeg is missing: install it with  winget install Gyan.FFmpeg  and restart Snag".into();
-            log::error!("ffmpeg not found: {e:#}");
-            // Tell the user how to fix it (on a separate thread: the dialog
-            // blocks until closed).
-            std::thread::spawn(|| {
-                crate::win::error_box(
-                    "Snag needs ffmpeg to record, and it isn't installed.\n\n\
-                     To install it, open PowerShell (or Terminal) and run:\n\n\
-                         winget install Gyan.FFmpeg\n\n\
-                     Then quit Snag (right-click the tray icon > Quit) and start it again.\n\
-                     (Or put ffmpeg.exe and ffprobe.exe in a \"bin\" folder next to snag.exe.)",
-                );
-            });
-        }
-        self.focused_monitor = foreground_monitor();
-        self.register_hotkeys();
-        // A recording left behind by a crash or power cut: save what it has.
-        let (events, out) = (self.events.clone(), self.settings.clips_dir.clone());
-        std::thread::spawn(move || {
-            for path in crate::buffer::recording::recover_leftovers(&out) {
-                let r = ClipResult { path, seconds: 0.0, segments: 0, bytes: 0, took: Duration::ZERO, warnings: Vec::new() };
-                let _ = events.send(Event::RecordingDone(Ok(r)));
-            }
-        });
-        self.want_recording = self.settings.recording.mode == RecordMode::WholeSession;
-        if self.settings.start_buffer_on_launch {
-            self.start_buffer();
-        }
-        self.update_tray();
-        if self.first_launch {
-            // Show what auto-tune chose and why.
-            self.open_ui("quality", None, true, false);
         }
     }
 
@@ -397,6 +458,7 @@ impl Controller {
 
     /// Runs after every event and at least twice a second.
     fn housekeeping(&mut self) {
+        self.wait_for_ffmpeg();
         self.keep_recording_in_step();
         // Nobody pressed anything for the new hotkey: give up.
         if self.capture_started.is_some_and(|t| t.elapsed() > Duration::from_secs(20)) {
@@ -512,6 +574,12 @@ impl Controller {
 
     fn start_buffer(&mut self) {
         if self.recorder.is_some() {
+            return;
+        }
+        if self.ffmpeg_missing.is_some() {
+            // Starts by itself once ffmpeg is found (wait_for_ffmpeg).
+            self.start_when_ffmpeg = true;
+            self.note = WAITING_FOR_FFMPEG.into();
             return;
         }
         let v = &self.settings.video;

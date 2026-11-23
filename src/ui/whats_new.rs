@@ -26,6 +26,14 @@ pub struct Notes {
 /// Newest first. The top entry must be the current version (tested).
 pub const HISTORY: &[Notes] = &[
     Notes {
+        version: "0.7.14",
+        new: &[],
+        fixed: &[
+            "Updating no longer says ffmpeg is missing when it is installed.",
+            "If ffmpeg is installed while Snag runs, recording starts by itself (no restart).",
+        ],
+    },
+    Notes {
         version: "0.7.13",
         new: &[],
         fixed: &[

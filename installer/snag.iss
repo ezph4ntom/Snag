@@ -10,7 +10,9 @@
 ; * Closes a running Snag before updating; settings (%APPDATA%\Snag) and
 ;   clips are kept on update and uninstall.
 ; * Snag's own updater runs it with /SILENT /RELAUNCH=1: it updates in
-;   place and starts Snag again afterwards.
+;   place and starts Snag again afterwards, after ffmpeg if that had to be
+;   installed ([Run] entries run BEFORE ssPostInstall, where winget runs,
+;   so the relaunch is in CurStepChanged instead).
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"
@@ -70,8 +72,7 @@ Name: "{autodesktop}\Snag"; Filename: "{app}\snag.exe"; Tasks: desktopicon; Comm
 
 [Run]
 Filename: "{app}\snag.exe"; Description: "Start Snag now"; Flags: nowait postinstall skipifsilent
-; After an update from inside Snag (silent), start it again.
-Filename: "{app}\snag.exe"; Flags: nowait; Check: Relaunch
+; (After an update from inside Snag, CurStepChanged starts it again.)
 
 [UninstallRun]
 ; Ask a running Snag to quit (cleanly stops recording) before files go.
@@ -83,11 +84,42 @@ begin
   Result := WizardSilent and (ExpandConstant('{param:RELAUNCH|0}') = '1');
 end;
 
-function FfmpegMissing: Boolean;
+function ExpandEnvironmentStrings(lpSrc: String; lpDst: String; nSize: DWORD): DWORD;
+  external 'ExpandEnvironmentStringsW@kernel32.dll stdcall';
+
+{ "%LOCALAPPDATA%\..." -> the real folder (PATH values in the registry
+  hold such names). }
+function ExpandEnv(const S: String): String;
+var
+  N: DWORD;
 begin
-  { On PATH, or in a bin folder next to the app (portable builds). }
-  Result := (FileSearch('ffmpeg.exe', GetEnv('PATH')) = '') and
-            (not FileExists(ExpandConstant('{app}\bin\ffmpeg.exe')));
+  Result := StringOfChar(' ', 8192);
+  N := ExpandEnvironmentStrings(S, Result, 8192);
+  if (N = 0) or (N > 8192) then
+    Result := S
+  else
+    SetLength(Result, N - 1);
+end;
+
+function OnPath(const Dirs: String): Boolean;
+begin
+  Result := (Dirs <> '') and (FileSearch('ffmpeg.exe', ExpandEnv(Dirs)) <> '');
+end;
+
+function FfmpegMissing: Boolean;
+var
+  P: String;
+begin
+  { Where Snag itself looks (paths::find_tool): a bin folder next to the
+    app (portable builds), winget's links, this process's PATH and the
+    PATH saved in the registry. The inherited PATH alone can be stale
+    (ffmpeg installed after Snag started): an update then "installed"
+    ffmpeg again, which upgraded it while Snag was already starting. }
+  Result := not (FileExists(ExpandConstant('{app}\bin\ffmpeg.exe'))
+    or FileExists(ExpandConstant('{localappdata}\Microsoft\WinGet\Links\ffmpeg.exe'))
+    or OnPath(GetEnv('PATH'))
+    or (RegQueryStringValue(HKCU, 'Environment', 'Path', P) and OnPath(P))
+    or (RegQueryStringValue(HKLM, 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment', 'Path', P) and OnPath(P)));
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
@@ -114,6 +146,10 @@ begin
                 '', SW_HIDE, ewWaitUntilTerminated, Code) or ((Code <> 0) and (Code <> -1978335189)) then
       MsgBox('ffmpeg could not be installed automatically (winget code ' + IntToStr(Code) + ').' + #13#10#13#10 +
              'Open PowerShell or Terminal and run:' + #13#10 + '    winget install Gyan.FFmpeg' + #13#10 +
-             'then start Snag again.', mbInformation, MB_OK);
+             'Snag starts recording by itself once it is installed.', mbInformation, MB_OK);
   end;
+  { After an update from inside Snag: start it again, now that ffmpeg is in
+    place (winget above has finished). }
+  if (CurStep = ssPostInstall) and Relaunch then
+    Exec(ExpandConstant('{app}\snag.exe'), '', ExpandConstant('{app}'), SW_SHOWNORMAL, ewNoWait, Code);
 end;

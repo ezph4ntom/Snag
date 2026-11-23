@@ -8,7 +8,7 @@
 //!   (or in the project root when running via `cargo run`)
 
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::UI::Shell::{
@@ -143,9 +143,10 @@ pub fn clip_sound_file() -> PathBuf {
 /// Finds a sidecar tool (`ffmpeg` or `ffprobe`).
 ///
 /// Search order: `SNAG_FFMPEG_DIR` env var, `bin\` next to the resources,
-/// next to the exe, then every folder on `PATH`. Falls back to the bare name
-/// so the error message from `Command::spawn` is still meaningful.
-fn find_tool(name: &str) -> PathBuf {
+/// next to the exe, every folder on `PATH`, then the places a tool installed
+/// after this process started shows up: winget's links folder and the PATH
+/// saved in the registry (our inherited PATH is a copy from when we started).
+fn find_tool(name: &str) -> Option<PathBuf> {
     let file = format!("{name}.exe");
     let mut dirs: Vec<PathBuf> = Vec::new();
     if let Some(d) = std::env::var_os("SNAG_FFMPEG_DIR") {
@@ -158,26 +159,49 @@ fn find_tool(name: &str) -> PathBuf {
         dirs.extend(std::env::split_paths(&path));
     }
     let found = dirs.iter().map(|d| d.join(&file)).find(|p| p.is_file());
-    // A tool installed after this process started (e.g. via winget) is not on
-    // our inherited PATH yet, so read the current PATH from the registry too.
-    found
-        .or_else(|| {
-            registry_path_dirs()
-                .into_iter()
-                .map(|d| d.join(&file))
-                .find(|p| p.is_file())
-        })
-        .unwrap_or_else(|| PathBuf::from(file))
+    found.or_else(|| {
+        let winget = std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join(r"Microsoft\WinGet\Links"));
+        winget.into_iter().chain(registry_path_dirs()).map(|d| d.join(&file)).find(|p| p.is_file())
+    })
 }
 
+/// A found tool, remembered; while it isn't found, the bare name (so the
+/// error from `Command::spawn` still says what is missing) and every call
+/// looks again: ffmpeg installed while Snag runs is picked up without a
+/// restart.
+fn tool(slot: &Mutex<Option<&'static Path>>, name: &str, bare: &'static str) -> &'static Path {
+    let mut slot = slot.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(p) = *slot {
+        return p;
+    }
+    match find_tool(name) {
+        // Leaked once per find (normally once per run) to stay &'static.
+        Some(p) => {
+            let p: &'static Path = Box::leak(p.into_boxed_path());
+            *slot = Some(p);
+            p
+        }
+        None => Path::new(bare),
+    }
+}
+
+static FFMPEG: Mutex<Option<&'static Path>> = Mutex::new(None);
+static FFPROBE: Mutex<Option<&'static Path>> = Mutex::new(None);
+
 pub fn ffmpeg_exe() -> &'static Path {
-    static P: OnceLock<PathBuf> = OnceLock::new();
-    P.get_or_init(|| find_tool("ffmpeg"))
+    tool(&FFMPEG, "ffmpeg", "ffmpeg.exe")
 }
 
 pub fn ffprobe_exe() -> &'static Path {
-    static P: OnceLock<PathBuf> = OnceLock::new();
-    P.get_or_init(|| find_tool("ffprobe"))
+    tool(&FFPROBE, "ffprobe", "ffprobe.exe")
+}
+
+/// Forget where ffmpeg/ffprobe were found (they failed to run: maybe moved
+/// or reinstalled elsewhere), so the next call looks again.
+pub fn forget_tools() {
+    for slot in [&FFMPEG, &FFPROBE] {
+        *slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
 }
 
 /// The user + machine `Path` values as currently stored in the registry.
@@ -226,4 +250,36 @@ fn registry_path_dirs() -> Vec<PathBuf> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn reads_the_path_saved_in_the_registry() {
+        // The machine PATH always exists (and holds System32): this is how
+        // Snag finds an ffmpeg installed after it started.
+        let dirs = super::registry_path_dirs();
+        assert!(dirs.iter().any(|d| d.join("cmd.exe").is_file()), "registry PATH: {dirs:?}");
+        assert!(dirs.iter().all(|d| !d.to_string_lossy().contains('%')), "not expanded: {dirs:?}");
+    }
+
+    #[test]
+    fn a_tool_installed_later_is_found_without_a_restart() {
+        use std::path::Path;
+        use std::sync::Mutex;
+        // A made-up tool next to the test exe (one of the folders searched).
+        let name = format!("snag-test-tool-{}", std::process::id());
+        let file = super::exe_dir().join(format!("{name}.exe"));
+        let slot: Mutex<Option<&'static Path>> = Mutex::new(None);
+        let _ = std::fs::remove_file(&file);
+        assert_eq!(super::tool(&slot, &name, "missing.exe"), Path::new("missing.exe"));
+        assert!(slot.lock().unwrap().is_none(), "a missing tool isn't remembered");
+        std::fs::write(&file, b"").unwrap();
+        assert_eq!(super::tool(&slot, &name, "missing.exe"), file);
+        std::fs::remove_file(&file).unwrap();
+        // Remembered once found, until forgotten.
+        assert_eq!(super::tool(&slot, &name, "missing.exe"), file);
+        *slot.lock().unwrap() = None;
+        assert_eq!(super::tool(&slot, &name, "missing.exe"), Path::new("missing.exe"));
+    }
 }

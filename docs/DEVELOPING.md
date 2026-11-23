@@ -62,9 +62,12 @@ powershell -ExecutionPolicy Bypass -File scripts\installer.ps1     # -> dist\Sna
 The installer needs no administrator rights. It installs to
 `%LOCALAPPDATA%\Programs\Snag` and adds a Start menu shortcut, plus an
 optional desktop shortcut and "start with Windows". If ffmpeg is missing,
-it offers to install it with winget. It updates in place (a running Snag is
-closed first) and has a normal uninstaller; settings and clips are kept.
-The script is `installer\snag.iss`.
+it offers to install it with winget. It looks where Snag does: `bin\` next
+to the app, winget's `Links` folder, its own PATH and the PATH saved in the
+registry. (The PATH it inherits can be stale: an update once "installed"
+ffmpeg again, which upgraded it while Snag was starting.) It updates in place
+(a running Snag is closed first) and has a normal uninstaller; settings and
+clips are kept. The script is `installer\snag.iss`.
 
 Installed copies update themselves (`src/update.rs`): the window asks the
 GitHub API for the latest release when it opens (unless it checked in the
@@ -73,7 +76,10 @@ minutes; the title bar offers
 "Update to X" when it is newer than the build's `Cargo.toml` version. A
 click downloads that release's `Snag-Setup-*.exe`, checks its SHA-256
 against GitHub's digest and runs it with `/SILENT /RELAUNCH=1`, so a release
-only needs the installer attached. Portable copies get the release page
+only needs the installer attached. `/RELAUNCH=1` starts Snag again at the
+end of `CurStepChanged(ssPostInstall)`, after winget (Inno runs `[Run]`
+entries before that step, so Snag would start while ffmpeg is being
+installed). Portable copies get the release page
 opened instead. To see the button without a newer release, start the
 window as an older version: `snag.exe --ui --pretend-version 0.1.0`.
 
@@ -85,8 +91,11 @@ powershell -ExecutionPolicy Bypass -File scripts\package.ps1 -WithFfmpeg
 ```
 
 creates `dist\Snag\` and `dist\Snag-v<version>.zip`. Without ffmpeg,
-testers install it once with `winget install Gyan.FFmpeg`; if it's missing
-Snag shows a message with that exact command. (ffmpeg full builds are
+testers install it once with `winget install Gyan.FFmpeg`. While it's
+missing, Snag looks for it every 2 s (`paths::ffmpeg_exe` remembers only a
+found path; `Controller::wait_for_ffmpeg`) and starts the buffer as soon as
+it's there, no restart needed; after 20 s it shows a message with that
+exact command. (ffmpeg full builds are
 GPL-licensed: bundling them means also shipping their license and a source link.)
 
 ### Running on another PC: hardware detection
