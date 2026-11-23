@@ -60,6 +60,13 @@ fn window_host() {
     for line in std::io::stdin().lines().map_while(Result::ok) {
         if let Some(secs) = line.strip_prefix("hang ").and_then(|s| s.trim().parse().ok()) {
             w.send(Cmd::Hang(Duration::from_secs(secs)));
+        } else if let Some(secs) = line.strip_prefix("busy ").and_then(|s| s.trim().parse().ok()) {
+            // Like a game: Windows doesn't swap a stuck window of this
+            // process for a faded "Not responding" copy (that copy would
+            // hide the drawing from the capture).
+            // SAFETY: a plain per-process switch.
+            unsafe { windows::Win32::UI::WindowsAndMessaging::DisableProcessWindowsGhosting() };
+            w.send(Cmd::HangDrawing(Duration::from_secs(secs)));
         }
     }
     std::thread::sleep(Duration::from_secs(120)); // killed long before
@@ -85,6 +92,41 @@ fn spawn_host(exit_by_itself: bool) -> ChildGuard {
         cmd.env(HOST_EXIT_ENV, "1");
     }
     ChildGuard(cmd.spawn().expect("spawn the window host"))
+}
+
+/// Makes the child's window stop responding for `hang` ("hang": it also
+/// stops drawing; "busy": another thread keeps drawing, like a game that
+/// is loading). Returns when that started and the thread that keeps
+/// messages waiting for the window meanwhile.
+fn hang_host(host: &mut ChildGuard, how: &str, hang: Duration) -> (Instant, std::thread::JoinHandle<()>) {
+    let exe = std::env::current_exe().unwrap().file_name().unwrap().to_string_lossy().into_owned();
+    let target = snag::capture::window::find(&exe, TITLE).expect("the child's window");
+    let hung_at = Instant::now();
+    {
+        use std::io::Write;
+        let stdin = host.0.stdin.as_mut().expect("child stdin");
+        writeln!(stdin, "{how} {}", hang.as_secs()).unwrap();
+        stdin.flush().unwrap();
+    }
+    // Windows only calls a window "not responding" while messages wait for
+    // it unanswered. A real game always has some (input, the shell asking
+    // whether it's alive); here: a mouse move and a ping, like the shell's.
+    let poker = std::thread::spawn(move || {
+        use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+        use windows::Win32::UI::WindowsAndMessaging::*;
+        while hung_at.elapsed() < hang {
+            let h = HWND(target as *mut _);
+            // SAFETY: a mouse-move message and a 50 ms ping to the test's
+            // own child window; a stale handle just fails.
+            unsafe {
+                let _ = PostMessageW(Some(h), WM_MOUSEMOVE, WPARAM(0), LPARAM(0));
+                let mut r = 0usize;
+                let _ = SendMessageTimeoutW(h, WM_NULL, WPARAM(0), LPARAM(0), SMTO_ABORTIFHUNG | SMTO_BLOCK, 50, Some(&mut r));
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    });
+    (hung_at, poker)
 }
 
 struct Outcome {
@@ -167,6 +209,38 @@ fn start(root: &Path) -> (Recorder, Ctx) {
     (rec, Ctx { s, clips })
 }
 
+/// A game busy loading: Windows says "Not responding" (its message loop is
+/// stuck) but it keeps drawing. Fortnite does this several times a session;
+/// Snag used to record black each time. It must keep recording it.
+#[test]
+#[ignore = "shows a small window for ~25 s, needs a desktop session; run with --ignored"]
+fn busy_window_keeps_recording() {
+    snag::logging::init("test-window-gone");
+    let root = std::env::temp_dir().join(format!("snag-window-busy-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (rec, cx) = start(&root);
+    let mut host = spawn_host(false);
+    assert!(cx.recording_green("f0-visible"), "the child's window isn't recorded to begin with");
+    let exe = std::env::current_exe().unwrap().file_name().unwrap().to_string_lossy().into_owned();
+    let target = snag::capture::window::find(&exe, TITLE).expect("the child's window");
+    let hang = Duration::from_secs(12);
+    let (hung_at, poker) = hang_host(&mut host, "busy", hang);
+    // Past the point where Windows calls it "not responding" (5 s) plus
+    // the time Snag took to notice a hung window before (3 s).
+    let watch = HUNG_AFTER + GONE_LIMIT + Duration::from_secs(1);
+    let went_black = wait_until(watch, || cx.waiting()).map(|_| hung_at.elapsed());
+    let c = last_frame_color(&clip(&cx.s, &cx.clips, "f1-busy"));
+    let reported_hung = snag::capture::window::is_hung(target);
+    println!("  f1-busy: windows says not responding: {reported_hung}, went black after {went_black:?}, last frame {c:?}");
+    let _ = poker.join();
+    drop(host);
+    assert!(cx.s.is_running(), "recorder error: {:?}", cx.s.error());
+    rec.stop();
+    assert!(reported_hung, "the test window wasn't 'not responding' (the test didn't test anything)");
+    assert!(went_black.is_none() && is_green(c), "a busy window that keeps drawing was recorded as gone");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[test]
 #[ignore = "shows small windows for ~90 s, needs a desktop session; run with --ignored"]
 fn window_going_away_records_black() {
@@ -195,34 +269,8 @@ fn window_going_away_records_black() {
     println!("case b: hung");
     let mut host = spawn_host(false);
     assert!(cx.recording_green("b0-visible"), "case b: the child's window isn't recorded to begin with");
-    let exe = std::env::current_exe().unwrap().file_name().unwrap().to_string_lossy().into_owned();
-    let target = snag::capture::window::find(&exe, TITLE).expect("the child's window");
     let hang = Duration::from_secs(14);
-    let hung_at = Instant::now();
-    {
-        use std::io::Write;
-        let stdin = host.0.stdin.as_mut().expect("child stdin");
-        writeln!(stdin, "hang {}", hang.as_secs()).unwrap();
-        stdin.flush().unwrap();
-    }
-    // Windows only calls a window "not responding" while messages wait for
-    // it unanswered. A real game always has some (input, the shell asking
-    // whether it's alive); here: a mouse move and a ping, like the shell's.
-    let poker = std::thread::spawn(move || {
-        use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
-        use windows::Win32::UI::WindowsAndMessaging::*;
-        while hung_at.elapsed() < hang {
-            let h = HWND(target as *mut _);
-            // SAFETY: a mouse-move message and a 50 ms ping to the test's
-            // own child window; a stale handle just fails.
-            unsafe {
-                let _ = PostMessageW(Some(h), WM_MOUSEMOVE, WPARAM(0), LPARAM(0));
-                let mut r = 0usize;
-                let _ = SendMessageTimeoutW(h, WM_NULL, WPARAM(0), LPARAM(0), SMTO_ABORTIFHUNG | SMTO_BLOCK, 50, Some(&mut r));
-            }
-            std::thread::sleep(Duration::from_millis(250));
-        }
-    });
+    let (hung_at, poker) = hang_host(&mut host, "hang", hang);
     let (noticed, clip_black) = cx.gone("b1-hung", hung_at, HUNG_AFTER + GONE_LIMIT);
     let _ = poker.join();
     std::thread::sleep(hang.saturating_sub(hung_at.elapsed()));

@@ -13,7 +13,15 @@ use super::EncoderKind;
 use super::ffmpeg::{encoder_adapter, input_path_args, video_codec_args};
 
 /// First line of `ffmpeg -version`, or an error if ffmpeg can't be run.
+/// Remembered once it worked (like `paths::ffmpeg_exe`): the core asks at
+/// startup and again before its first recording (`ffmpeg::input_queue`),
+/// and each run of ffmpeg costs ~50-70 ms. A failure isn't remembered, so
+/// installing ffmpeg is noticed.
 pub fn ffmpeg_version() -> Result<String> {
+    static FOUND: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    if let Some(v) = FOUND.get() {
+        return Ok(v.clone());
+    }
     let out = crate::win::hidden_command(crate::paths::ffmpeg_exe())
         .arg("-version")
         .output()
@@ -21,7 +29,8 @@ pub fn ffmpeg_version() -> Result<String> {
     if !out.status.success() {
         bail!("ffmpeg -version failed");
     }
-    Ok(String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or("ffmpeg").to_string())
+    let line = String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or("ffmpeg").to_string();
+    Ok(FOUND.get_or_init(|| line).clone())
 }
 
 /// Encodes 10 frames of a test pattern. ~0.3-1 s.

@@ -42,6 +42,10 @@ pub enum Cmd {
     Show,
     /// Stop pumping messages for this long (the window "hangs").
     Hang(Duration),
+    /// Stop pumping messages for this long while another thread keeps
+    /// drawing (two greens, ~60 a second): a game busy loading, which
+    /// Windows calls "Not responding" while it keeps rendering.
+    HangDrawing(Duration),
     /// Repaint with a changing color about 90 times a second (like a game).
     Animate,
 }
@@ -132,6 +136,31 @@ impl TestWindow {
                             let _ = SetWindowPos(hwnd, None, 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
                         }
                         Ok(Some(Cmd::Hang(d))) => std::thread::sleep(d), // no message pumping meanwhile
+                        Ok(Some(Cmd::HangDrawing(d))) => {
+                            let h = hwnd.0 as isize;
+                            let painter = std::thread::spawn(move || {
+                                let hwnd = HWND(h as *mut _);
+                                let end = std::time::Instant::now() + d;
+                                let mut n = 0u32;
+                                while std::time::Instant::now() < end {
+                                    n += 1;
+                                    let g = if n.is_multiple_of(2) { 0xC8 } else { 0xB4 };
+                                    // (Still inside the unsafe block above.) GDI drawing on
+                                    // our own window from another thread: no messages
+                                    // involved; the DC is released.
+                                    let dc = windows::Win32::Graphics::Gdi::GetDC(Some(hwnd));
+                                    let brush = CreateSolidBrush(COLORREF(g << 8));
+                                    let mut r = windows::Win32::Foundation::RECT::default();
+                                    let _ = GetClientRect(hwnd, &mut r);
+                                    windows::Win32::Graphics::Gdi::FillRect(dc, &r, brush);
+                                    let _ = windows::Win32::Graphics::Gdi::DeleteObject(brush.into());
+                                    windows::Win32::Graphics::Gdi::ReleaseDC(Some(hwnd), dc);
+                                    std::thread::sleep(Duration::from_millis(16));
+                                }
+                            });
+                            std::thread::sleep(d); // no message pumping meanwhile
+                            let _ = painter.join();
+                        }
                         Ok(Some(Cmd::Animate)) => animate = Some(0),
                         Ok(None) | Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
                         Err(std::sync::mpsc::TryRecvError::Empty) => {}

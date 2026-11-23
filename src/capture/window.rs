@@ -52,17 +52,17 @@ pub fn list() -> Vec<AppWindow> {
 }
 
 /// The window to record for the app `exe`: the one titled `title` if it
-/// has several, else the frontmost one.
+/// has several, else the frontmost one. One that is "not responding" is
+/// picked only if the app has no other: a game busy loading still draws
+/// (`WgcSource` notices one that really froze).
 pub fn find(exe: &str, title: &str) -> Option<isize> {
     if exe.is_empty() {
         return None;
     }
-    // A hung window isn't picked: it shows nothing new (see `not_showing`).
-    let mine: Vec<AppWindow> = list()
-        .into_iter()
-        .filter(|w| w.exe.eq_ignore_ascii_case(exe) && !is_hung(HWND(w.hwnd as *mut _)))
-        .collect();
-    mine.iter().find(|w| w.title == title).or(mine.first()).map(|w| w.hwnd)
+    let mine: Vec<AppWindow> = list().into_iter().filter(|w| w.exe.eq_ignore_ascii_case(exe)).collect();
+    let pick = |c: &[&AppWindow]| c.iter().find(|w| w.title == title).or(c.first()).map(|w| w.hwnd);
+    let responding: Vec<&AppWindow> = mine.iter().filter(|w| !is_hung(w.hwnd)).collect();
+    pick(&responding).or_else(|| pick(&mine.iter().collect::<Vec<_>>()))
 }
 
 pub fn exists(hwnd: isize) -> bool {
@@ -86,18 +86,22 @@ pub fn not_showing(hwnd: isize) -> Option<&'static str> {
             Some("was hidden")
         } else if is_cloaked(h) {
             Some("isn't on this desktop")
-        } else if is_hung(h) {
-            Some("stopped responding")
+        } else if is_hung(hwnd) {
+            Some(NOT_RESPONDING)
         } else {
             None
         }
     }
 }
 
-/// "Not responding": no messages handled for 5 s (Windows' own rule).
-fn is_hung(hwnd: HWND) -> bool {
-    // SAFETY: plain query on a window handle.
-    unsafe { IsHungAppWindow(hwnd).as_bool() }
+/// What `not_showing` says about a window that is "not responding".
+pub const NOT_RESPONDING: &str = "stopped responding";
+
+/// "Not responding": no messages handled for 5 s (Windows' own rule). A
+/// game can be that while it keeps drawing (busy loading).
+pub fn is_hung(hwnd: isize) -> bool {
+    // SAFETY: plain query on a window handle; accepts stale handles.
+    unsafe { IsHungAppWindow(HWND(hwnd as *mut _)).as_bool() }
 }
 
 /// Hidden by the system although "visible": another virtual desktop, or a

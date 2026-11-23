@@ -129,7 +129,7 @@ cargo test --release --test trimmer -- --ignored --nocapture       # trim exactn
 cargo test --release --test recording -- --ignored --nocapture     # long recordings: snapshot + stop (~15 s)
 cargo test --release --test audio_capture -- --ignored --nocapture # apps on two devices, mic (plays quiet tones)
 cargo test --release --test window_capture -- --ignored --nocapture # "only this app": covered, minimized, resized (stretched), closed, reopened (~20 s)
-cargo test --release --test window_gone -- --ignored --nocapture --test-threads=1 # the app's window hidden, hung, destroyed, process killed/exited, leftovers (~100 s)
+cargo test --release --test window_gone -- --ignored --nocapture --test-threads=1 # the app's window hidden, hung, busy but drawing, destroyed, process killed/exited, leftovers (~2 min)
 cargo test --release --test usage -- --ignored --nocapture --exact record_monitor # 1080p60 for a minute; measure CPU/GPU/memory from outside
 ```
 
@@ -209,9 +209,17 @@ The core and UI talk over the UI's stdin/stdout, one JSON message per line
   already written. Old segments are deleted automatically.
 * **Saving a clip** (`src/buffer/clip.rs`): wait for the segment containing
   the key press to finish (at most 1 s, so the moment you pressed is
-  included), byte-concatenate `init.mp4` + segments, remux to a normal MP4
-  with the index at the front (`+faststart`), and rename it into place. It
-  never touches the recording pipeline, so there's no hiccup.
+  included), remux `init.mp4` + segments (read back to back by ffmpeg's
+  `concat:` protocol, so no joined copy is written first; more than 400
+  files fall back to joining them in a temp file) to a normal MP4 with the
+  index at the front (`+faststart`), and rename it into place. It never
+  touches the recording pipeline, so there's no hiccup.
+* **"Only one app" and hung windows**: Windows calls a window "not
+  responding" when its message loop is stuck for 5 s, which games do while
+  loading even though they keep drawing (Fortnite). `WgcSource` lets go of
+  a window only when it is not responding *and* gave no new picture for 2 s
+  (`FROZEN_AFTER`), and doesn't attach to that frozen window again until it
+  responds. `tests/window_gone.rs` covers both (`busy_window_keeps_recording`).
 * **Monitor switching**: the encoder size is fixed. A new capture session
   starts on the other monitor while the pacer repeats the last frame
   (about 20 ms), and a monitor (or app window) with a different aspect ratio

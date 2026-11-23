@@ -83,6 +83,10 @@ const CHECK_EVERY: Duration = Duration::from_millis(250);
 /// A window that gives no picture this long after capture started is
 /// recorded as black (so the buffer still starts).
 const FIRST_FRAME_WAIT: Duration = Duration::from_secs(1);
+/// A window Windows calls "not responding" is gone only once it has also
+/// given no new picture for this long: games busy loading (Fortnite) stop
+/// answering messages for seconds at a time while they keep drawing.
+const FROZEN_AFTER: Duration = Duration::from_secs(2);
 
 /// Live screen capture: WGC -> GPU NV12 conversion -> readback.
 pub struct WgcSource {
@@ -103,6 +107,11 @@ pub struct WgcSource {
     attached_at: Instant,
     /// A real frame arrived since attaching.
     got_frame: bool,
+    /// When the capture last gave a new picture (or attached).
+    last_frame_at: Instant,
+    /// The window let go of because it froze (not responding, no new
+    /// picture): not attached again until it responds (0 = none).
+    frozen: isize,
     /// The last frame handed out is our black frame.
     black: bool,
     /// Said once per app: it fills its monitor / gives no picture.
@@ -128,6 +137,8 @@ impl WgcSource {
             next_check: now,
             attached_at: now,
             got_frame: false,
+            last_frame_at: now,
+            frozen: 0,
             black: false,
             told_fullscreen: false,
             told_no_picture: false,
@@ -155,12 +166,21 @@ impl WgcSource {
                 Some("closed")
             } else if now >= self.next_check {
                 self.next_check = now + CHECK_EVERY;
-                window::not_showing(self.hwnd)
+                match window::not_showing(self.hwnd) {
+                    // Busy, not frozen: it still draws.
+                    Some(window::NOT_RESPONDING) if self.last_frame_at.elapsed() < FROZEN_AFTER => None,
+                    why => why,
+                }
             } else {
                 None
             };
             let Some(why) = why else { return };
-            log::info!("{} {why}; recording black until it's back", t.exe);
+            if why == window::NOT_RESPONDING {
+                self.frozen = self.hwnd;
+                log::info!("{} {why} and gave no new picture for {} s; recording black until it's back", t.exe, FROZEN_AFTER.as_secs());
+            } else {
+                log::info!("{} {why}; recording black until it's back", t.exe);
+            }
             self.capture = None;
             self.hwnd = 0;
             self.next_look = now;
@@ -170,6 +190,10 @@ impl WgcSource {
         }
         self.next_look = Instant::now() + LOOK_EVERY;
         let Some(hwnd) = window::find(&t.exe, &t.title) else { return };
+        if hwnd == self.frozen && window::is_hung(hwnd) {
+            return; // still frozen
+        }
+        self.frozen = 0;
         match WgcCapture::start_for_window(&self.d3d, hwnd, self.capture_cursor) {
             Ok(c) => {
                 log::info!("found {}: {:?}", t.exe, window::title(HWND(hwnd as *mut _)));
@@ -185,6 +209,7 @@ impl WgcSource {
                 self.hwnd = hwnd;
                 self.next_check = Instant::now() + CHECK_EVERY;
                 self.attached_at = Instant::now();
+                self.last_frame_at = self.attached_at;
                 self.got_frame = false;
                 self.converter = None;
                 self.switched_at = Some(Instant::now());
@@ -259,6 +284,7 @@ impl FrameSource for WgcSource {
             }
             let _ = frame.Close();
             self.got_frame = true;
+            self.last_frame_at = Instant::now();
             if let Some(t) = self.switched_at.take() {
                 log::info!("capture switch: first new frame after {} ms", t.elapsed().as_millis());
             }
@@ -300,6 +326,7 @@ impl FrameSource for WgcSource {
                 self.window = Some(t);
                 self.capture = None;
                 self.hwnd = 0;
+                self.frozen = 0;
                 self.next_look = Instant::now();
                 self.told_fullscreen = false;
                 self.told_no_picture = false;

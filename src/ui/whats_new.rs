@@ -26,6 +26,15 @@ pub struct Notes {
 /// Newest first. The top entry must be the current version (tested).
 pub const HISTORY: &[Notes] = &[
     Notes {
+        version: "0.7.13",
+        new: &[],
+        fixed: &[
+            "\"Only one app\": a game that is busy loading (like Fortnite) no longer turns the clip black.",
+            "Saving a clip is about a third faster and writes half as much to disk.",
+            "The replay buffer starts a little sooner.",
+        ],
+    },
+    Notes {
         version: "0.7.12",
         new: &[
             "Clip editor: Ctrl+Z undoes a cut, Ctrl+Y redoes it (or the Undo / Redo buttons).",

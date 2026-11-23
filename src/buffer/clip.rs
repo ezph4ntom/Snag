@@ -3,10 +3,11 @@
 //! 1. Work out which segments cover `[pressed - N s, pressed]`.
 //! 2. Wait for the segment containing the moment you pressed the key to be
 //!    finished (at most one segment length, ~1 s), so the clip includes it.
-//! 3. Byte-concatenate `init.mp4` + those segments: a valid fragmented MP4.
-//! 4. Remux (no re-encode, ~100 ms) into a regular MP4 with the index at the
-//!    front (`+faststart`) so it plays and seeks everywhere, written as
-//!    `.part` and renamed: a clip file is either complete or absent.
+//! 3. `init.mp4` + those segments, byte-concatenated, are a valid fragmented
+//!    MP4: ffmpeg reads them that way straight from the buffer (`concat:`).
+//! 4. Remux (no re-encode, ~0.3 s for a minute) into a regular MP4 with the
+//!    index at the front (`+faststart`) so it plays and seeks everywhere,
+//!    written as `.part` and renamed: a clip file is either complete or absent.
 //!
 //! None of this touches the recording pipeline, so saving never causes a
 //! hiccup in the buffer.
@@ -80,31 +81,23 @@ pub fn save_clip(session: &Session, pressed_at: Instant, seconds: f64, out_dir: 
         }
     }
 
-    // 3. init + segments -> one fragmented MP4 (next to the buffer, fast disk).
-    let joined = session.dir.join(format!("clip_{}.tmp.mp4", segs[0].seq));
-    {
-        let mut out = std::io::BufWriter::new(
-            std::fs::File::create(&joined).with_context(|| format!("creating {}", joined.display()))?,
-        );
-        let mut copy = |name: &str| -> Result<()> {
-            let bytes = std::fs::read(session.dir.join(name)).with_context(|| format!("reading buffer file {name}"))?;
-            out.write_all(&bytes)?;
-            Ok(())
-        };
-        copy(crate::encode::ffmpeg::INIT_SEGMENT)?;
-        for s in &segs {
-            copy(&s.file)?;
-        }
-        out.flush()?;
-    }
-
-    // 4. Remux to a normal MP4.
+    // 3 + 4. init + segments, read by ffmpeg as one fragmented MP4, remuxed
+    // into a normal MP4.
     std::fs::create_dir_all(out_dir).with_context(|| format!("creating {}", out_dir.display()))?;
     let final_path = crate::win::unique_path(out_dir, &format!("Clip_{}", crate::win::file_timestamp()), "mp4");
-    let part = final_path.with_extension("mp4.part");
-    let result = remux(&joined, &part, app);
-    let _ = std::fs::remove_file(&joined);
-    result?;
+    let part = std::path::absolute(final_path.with_extension("mp4.part"))?;
+    let names: Vec<&str> = std::iter::once(crate::encode::ffmpeg::INIT_SEGMENT)
+        .chain(segs.iter().map(|s| s.file.as_str()))
+        .collect();
+    let direct = concat_url(&names).map(|url| remux(std::ffi::OsStr::new(&url), &session.dir, &part, app));
+    match direct {
+        Some(Ok(())) => {}
+        Some(Err(e)) => {
+            log::warn!("saving straight from the buffer failed ({e:#}); joining the segments first");
+            remux_joined(session, &names, segs[0].seq, &part, app)?;
+        }
+        None => remux_joined(session, &names, segs[0].seq, &part, app)?,
+    }
     std::fs::rename(&part, &final_path).with_context(|| format!("finalizing {}", final_path.display()))?;
 
     let seconds_saved: f64 = segs.iter().map(|s| s.duration).sum();
@@ -130,9 +123,46 @@ pub fn tag_args(app: Option<&str>) -> Vec<String> {
     a
 }
 
-fn remux(input: &Path, output: &Path, app: Option<&str>) -> Result<()> {
+/// Most files ffmpeg's `concat:` protocol may open at once: it opens every
+/// part up front, and the C runtime allows 512 open files per process.
+const MAX_CONCAT_FILES: usize = 400;
+
+/// `concat:init.mp4|seg_000001.m4s|...`: ffmpeg reads the buffer files
+/// (relative to the session folder) back to back as one file, which is the
+/// fragmented MP4 we want, without writing a joined copy to disk first
+/// (half the disk writes of a save). None when there are too many files,
+/// or the command line would get too long.
+fn concat_url(names: &[&str]) -> Option<String> {
+    let url = format!("concat:{}", names.join("|"));
+    (names.len() <= MAX_CONCAT_FILES && url.len() < 30_000 && !names.iter().any(|n| n.contains('|'))).then_some(url)
+}
+
+/// The fallback: byte-concatenate the files into one temp file next to the
+/// buffer, then remux that.
+fn remux_joined(session: &Session, names: &[&str], first_seq: u64, part: &Path, app: Option<&str>) -> Result<()> {
+    let joined = session.dir.join(format!("clip_{first_seq}.tmp.mp4"));
+    let written = (|| -> Result<()> {
+        let mut out = std::io::BufWriter::new(
+            std::fs::File::create(&joined).with_context(|| format!("creating {}", joined.display()))?,
+        );
+        for name in names {
+            let bytes = std::fs::read(session.dir.join(name)).with_context(|| format!("reading buffer file {name}"))?;
+            out.write_all(&bytes)?;
+        }
+        out.flush()?;
+        Ok(())
+    })();
+    let result = written.and_then(|()| remux(joined.as_os_str(), &session.dir, part, app));
+    let _ = std::fs::remove_file(&joined);
+    result
+}
+
+/// Remuxes `input` (a file, or an ffmpeg URL relative to `dir`) to `output`
+/// (an absolute path).
+fn remux(input: &std::ffi::OsStr, dir: &Path, output: &Path, app: Option<&str>) -> Result<()> {
     let out = std::process::Command::new(crate::paths::ffmpeg_exe())
         .creation_flags(CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS)
+        .current_dir(dir)
         .args(["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i"])
         .arg(input)
         .args(["-map", "0", "-c", "copy"])
@@ -146,4 +176,21 @@ fn remux(input: &Path, output: &Path, app: Option<&str>) -> Result<()> {
         bail!("remux failed: {}", String::from_utf8_lossy(&out.stderr).trim());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_CONCAT_FILES, concat_url};
+
+    #[test]
+    fn concat_url_lists_the_buffer_files_in_order() {
+        assert_eq!(concat_url(&["init.mp4", "seg_000007.m4s", "seg_000008.m4s"]).unwrap(), "concat:init.mp4|seg_000007.m4s|seg_000008.m4s");
+        // A 15-minute buffer (the maximum) is too many files at once: the
+        // caller joins them on disk instead.
+        let names: Vec<String> = (0..901).map(|i| format!("seg_{i:06}.m4s")).collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        assert!(concat_url(&names).is_none());
+        assert!(concat_url(&names[..MAX_CONCAT_FILES]).is_some());
+        assert!(concat_url(&["init.mp4", "a|b.m4s"]).is_none());
+    }
 }
