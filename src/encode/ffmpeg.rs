@@ -150,6 +150,30 @@ pub fn video_codec_args(kind: EncoderKind, fps: u32, bitrate_kbps: u32, keyframe
     a
 }
 
+/// `-thread_queue_size` for an input, only where it does something. ffmpeg
+/// 7 made it a no-op on inputs (always threaded now) and 9.1 rejects it
+/// ("cannot be applied to input url": recording failed to start), so only
+/// ffmpeg 6 and older get it.
+fn input_queue(packets: u32) -> Vec<String> {
+    static OLD: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let old = *OLD.get_or_init(|| {
+        let line = super::detect::ffmpeg_version().unwrap_or_default();
+        let old = major_version(&line).is_some_and(|m| m <= 6);
+        log::info!("{line}: input queue option {}", if old { "on" } else { "off" });
+        old
+    });
+    if old { vec!["-thread_queue_size".into(), packets.to_string()] } else { Vec::new() }
+}
+
+/// The major version in `ffmpeg -version`'s first line ("ffmpeg version
+/// 9.1-full_build-www.gyan.dev", "ffmpeg version n6.1.1"). Git builds
+/// ("N-12345-gabc", "2026-08-31-git-...") are newer than any release.
+fn major_version(line: &str) -> Option<u32> {
+    let v = line.strip_prefix("ffmpeg version ")?;
+    let v = v.strip_prefix('n').unwrap_or(v);
+    v.split(['.', '-']).next()?.parse().ok()
+}
+
 /// A running ffmpeg process fed through its stdin.
 pub struct FfmpegHlsEncoder {
     child: Child,
@@ -288,17 +312,18 @@ impl FfmpegHlsEncoder {
             .args(["-f", "rawvideo", "-pix_fmt", "nv12"])
             .args(["-video_size", &format!("{}x{}", cfg.width, cfg.height)])
             .args(["-framerate", &cfg.fps.to_string()])
-            // ffmpeg stops pulling frames while the encoder initializes
-            // (~0.3 s for NVENC). A deeper input queue lets its reader thread
-            // keep draining our pipe meanwhile, so startup never stalls us.
-            .args(["-thread_queue_size", "48"])
+            // ffmpeg 6 and older stop pulling frames while the encoder
+            // initializes (~0.3 s for NVENC). A deeper input queue lets their
+            // reader thread keep draining our pipe meanwhile.
+            .args(input_queue(48))
             // Formats are fully specified: don't wait to "probe" the inputs.
             .args(["-probesize", "32", "-analyzeduration", "0"])
             .args(["-i", "pipe:0"]);
         if let Some((name, _)) = &audio {
             cmd.args(["-f", "wav", "-ignore_length", "1", "-max_size", "4096"])
                 .args(["-probesize", "32", "-analyzeduration", "0"])
-                .args(["-thread_queue_size", "512", "-i", name]);
+                .args(input_queue(512))
+                .args(["-i", name]);
         }
         cmd.args(["-filter_complex", &graph, "-map", "[v]"])
             .args(video_codec_args(cfg.kind, cfg.fps, cfg.bitrate_kbps, cfg.segment_seconds, true));
@@ -444,5 +469,22 @@ impl Drop for FfmpegHlsEncoder {
         if self.stdin.is_some() {
             let _ = self.finish();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::major_version;
+
+    #[test]
+    fn reads_the_major_version() {
+        assert_eq!(major_version("ffmpeg version 9.1-essentials_build-www.gyan.dev Copyright (c) 2000-2026"), Some(9));
+        assert_eq!(major_version("ffmpeg version 9.0.2-full_build-www.gyan.dev"), Some(9));
+        assert_eq!(major_version("ffmpeg version n6.1.1-27-g1234 Copyright"), Some(6));
+        assert_eq!(major_version("ffmpeg version 4.4.2-0ubuntu0.22.04.1"), Some(4));
+        // Git builds count as new (no option).
+        assert_eq!(major_version("ffmpeg version N-118000-g1234abcd-20260901"), None);
+        assert!(major_version("ffmpeg version 2026-08-31-git-abc-full_build-www.gyan.dev").is_some_and(|m| m > 6));
+        assert_eq!(major_version(""), None);
     }
 }

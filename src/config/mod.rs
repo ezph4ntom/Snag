@@ -246,7 +246,7 @@ pub struct AudioSettings {
     pub record_mic: bool,
     /// Microphone endpoint id; empty = Windows' default microphone.
     pub mic_device: String,
-    /// 0..=1
+    /// 0..=2 (over 1 boosts a quiet mic).
     pub mic_volume: f32,
 }
 
@@ -266,6 +266,9 @@ impl Default for AudioSettings {
 }
 
 impl AudioSettings {
+    /// Source volumes go up to 200 %: a boost for quiet mics and apps.
+    pub const MAX_VOLUME: f32 = 2.0;
+
     /// Changes that need the replay buffer restarted (the rest is applied
     /// live, without losing what's buffered).
     pub fn needs_restart(&self, other: &AudioSettings) -> bool {
@@ -391,13 +394,13 @@ impl Settings {
         }
         self.audio.bitrate_kbps = self.audio.bitrate_kbps.clamp(64, 320);
         for a in &mut self.audio.apps {
-            a.volume = a.volume.clamp(0.0, 1.0);
+            a.volume = a.volume.clamp(0.0, AudioSettings::MAX_VOLUME);
             a.exe = a.exe.to_ascii_lowercase();
         }
-        self.audio.mic_volume = self.audio.mic_volume.clamp(0.0, 1.0);
+        self.audio.mic_volume = self.audio.mic_volume.clamp(0.0, AudioSettings::MAX_VOLUME);
         self.ui.scale = (self.ui.scale.clamp(UiSettings::MIN_SCALE, UiSettings::MAX_SCALE) * 10.0).round() / 10.0;
         for d in &mut self.audio.devices {
-            d.volume = d.volume.clamp(0.0, 1.0);
+            d.volume = d.volume.clamp(0.0, AudioSettings::MAX_VOLUME);
         }
     }
 

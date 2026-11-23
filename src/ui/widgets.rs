@@ -1,6 +1,7 @@
 //! Snag's own small widgets, drawn to match the Daylight design:
 //! * [`pill_slider`]: a rounded track, filled in green up to a white
-//!   rounded knob (used for volumes and the clip length);
+//!   rounded knob (used for volumes and the clip length); [`pill_slider_to`]
+//!   goes past 100 % (volume boost);
 //! * [`value_box`]: the number next to a slider, with a dimmer unit;
 //! * [`status_pill`]: "● Recording" style badges.
 
@@ -12,20 +13,36 @@ use crate::themes::Theme;
 /// green fill and a white knob. `value` is 0..=1. Returns the response
 /// (`changed()` while dragging or clicking).
 pub fn pill_slider(ui: &mut egui::Ui, theme: &Theme, value: &mut f32, width: f32) -> Response {
+    pill_slider_to(ui, theme, value, 1.0, width)
+}
+
+/// [`pill_slider`] for 0..=`max`. Past 1 (a boost: volumes go to 200 %) the
+/// track has a mark at 1, the knob snaps to it when close, the fill turns
+/// amber past it, and a double-click puts it back to 1.
+pub fn pill_slider_to(ui: &mut egui::Ui, theme: &Theme, value: &mut f32, max: f32, width: f32) -> Response {
     let c = &theme.colors;
     let h = 24.0;
+    let knob_w = 20.0;
+    let boost = max > 1.0;
     let (rect, mut resp) = ui.allocate_exact_size(vec2(width, h), Sense::click_and_drag());
+    let set = |value: &mut f32, v: f32, resp: &mut Response| {
+        let v = v.clamp(0.0, max);
+        if (v - *value).abs() > f32::EPSILON {
+            *value = v;
+            resp.mark_changed();
+        }
+    };
     if let Some(p) = resp.interact_pointer_pos() {
         if resp.dragged() || resp.clicked() || resp.is_pointer_button_down_on() {
-            let knob_w = 20.0;
             let t = ((p.x - rect.left() - knob_w / 2.0) / (rect.width() - knob_w)).clamp(0.0, 1.0);
-            if (t - *value).abs() > f32::EPSILON {
-                *value = t;
-                resp.mark_changed();
-            }
+            let v = t * max;
+            set(value, if boost && (v - 1.0).abs() < 0.03 * max { 1.0 } else { v }, &mut resp);
         }
     }
-    // Arrow keys when focused.
+    if boost && resp.double_clicked() {
+        set(value, 1.0, &mut resp);
+    }
+    // Arrow keys when focused: 5 % steps.
     if resp.has_focus() {
         let step = ui.input(|i| {
             if i.key_pressed(egui::Key::ArrowRight) {
@@ -37,22 +54,33 @@ pub fn pill_slider(ui: &mut egui::Ui, theme: &Theme, value: &mut f32, width: f32
             }
         });
         if step != 0.0 {
-            *value = (*value + step).clamp(0.0, 1.0);
-            resp.mark_changed();
+            let v = *value + step;
+            set(value, v, &mut resp);
         }
     }
-    let v = value.clamp(0.0, 1.0);
+    let v = value.clamp(0.0, max) / max;
     let p = ui.painter();
     let radius = CornerRadius::same(8);
     let track = c.control.map(|h| h.0).unwrap_or(c.widget.0);
     p.rect_filled(rect, radius, track);
-    // The knob is as tall as the track and drawn last, so the green fill
-    // ends hidden under it (no green showing around the knob).
-    let knob_w = 20.0;
+    let x_at = |t: f32| rect.left() + knob_w / 2.0 + (rect.width() - knob_w) * t;
+    // The knob is as tall as the track and drawn last, so the fill ends
+    // hidden under it (no color showing around the knob).
     let knob_x = rect.left() + (rect.width() - knob_w) * v;
+    let enabled = ui.is_enabled();
+    let tone = |col: Color32| if enabled { col } else { col.gamma_multiply(0.4) };
     let fill = Rect::from_min_max(rect.min, pos2(knob_x + knob_w / 2.0, rect.bottom()));
-    let green = if ui.is_enabled() { c.success.0 } else { c.success.0.gamma_multiply(0.4) };
-    p.rect_filled(fill, radius, green);
+    p.rect_filled(fill, radius, tone(c.success.0));
+    if boost {
+        let one = x_at(1.0 / max);
+        if knob_x + knob_w / 2.0 > one {
+            // The boosted part: amber from the 100 % mark to the knob.
+            let over = Rect::from_min_max(pos2(one, rect.top()), fill.max);
+            p.rect_filled(over, CornerRadius { nw: 0, sw: 0, ne: 8, se: 8 }, tone(c.warning.0));
+        }
+        let mark = Stroke::new(2.0, Color32::from_white_alpha(if enabled { 110 } else { 50 }));
+        p.line_segment([pos2(one, rect.top() + 5.0), pos2(one, rect.bottom() - 5.0)], mark);
+    }
     let knob = Rect::from_min_size(pos2(knob_x, rect.top()), vec2(knob_w, h));
     let hovered = resp.hovered() || resp.dragged();
     p.rect_filled(knob.translate(vec2(0.0, 1.0)), radius, Color32::from_black_alpha(45));

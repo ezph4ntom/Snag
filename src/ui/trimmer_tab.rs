@@ -9,7 +9,8 @@
 //!
 //! Keyboard: Space play/pause · ←/→ one frame · Shift+←/→ one second ·
 //! I / O set start / end at the playhead · S split · Delete remove the
-//! piece · Home / End jump to the piece's start / end.
+//! piece · Home / End jump to the piece's start / end · Ctrl+Z undo ·
+//! Ctrl+Y (or Ctrl+Shift+Z) redo.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -34,6 +35,22 @@ const CACHE_BYTES: usize = 48 * 1024 * 1024;
 /// Smooth when the full-resolution frame is drawn smaller than it is
 /// (mipmaps avoid the shimmer plain down-scaling gives).
 const PREVIEW_FILTER: TextureOptions = TextureOptions::LINEAR.with_mipmap_mode(Some(egui::TextureFilter::Linear));
+
+/// Edits kept for Ctrl+Z.
+const UNDO_LIMIT: usize = 200;
+
+/// The edit at one moment, for undo/redo.
+#[derive(Clone)]
+struct Snapshot {
+    pieces: Vec<Piece>,
+    sel: usize,
+    playhead: usize,
+}
+
+/// The same pieces (same clips, same frames), in the same order.
+fn same_pieces(a: &[Piece], b: &[Piece]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| Arc::ptr_eq(&x.probe, &y.probe) && x.start == y.start && x.end == y.end)
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Drag {
@@ -66,6 +83,11 @@ struct Loaded {
     /// The clip's sound while playing (follows `playing`).
     audio: Option<AudioPlayer>,
     drag: Option<Drag>,
+    /// The edit before a handle drag started (undone as one step).
+    drag_before: Option<Snapshot>,
+    /// Ctrl+Z / Ctrl+Y.
+    undo: Vec<Snapshot>,
+    redo: Vec<Snapshot>,
     /// Last time the playhead moved; an idle decoder is stopped after a few
     /// seconds so a paused clip holds no ffmpeg process (or its memory).
     last_activity: Instant,
@@ -89,8 +111,59 @@ impl Loaded {
             playing: None,
             audio: None,
             drag: None,
+            drag_before: None,
+            undo: Vec::new(),
+            redo: Vec::new(),
             last_activity: Instant::now(),
         }
+    }
+
+    fn snapshot(&self) -> Snapshot {
+        Snapshot { pieces: self.pieces.clone(), sel: self.sel, playhead: self.playhead }
+    }
+
+    /// Runs `f` as one undoable step (if it changed the pieces).
+    fn edit<R>(&mut self, f: impl FnOnce(&mut Loaded) -> R) -> R {
+        let before = self.snapshot();
+        let r = f(self);
+        self.record(before);
+        r
+    }
+
+    /// Remembers `before` for Ctrl+Z if the pieces have changed since.
+    fn record(&mut self, before: Snapshot) {
+        if !same_pieces(&before.pieces, &self.pieces) {
+            self.undo.push(before);
+            if self.undo.len() > UNDO_LIMIT {
+                self.undo.remove(0);
+            }
+            self.redo.clear();
+        }
+    }
+
+    /// Ctrl+Z: back to before the last edit. False if there's none.
+    fn undo(&mut self, mode: TrimMode) -> bool {
+        let Some(s) = self.undo.pop() else { return false };
+        self.redo.push(self.snapshot());
+        self.restore(s, mode);
+        true
+    }
+
+    /// Ctrl+Y: the edit Ctrl+Z took back.
+    fn redo(&mut self, mode: TrimMode) -> bool {
+        let Some(s) = self.redo.pop() else { return false };
+        self.undo.push(self.snapshot());
+        self.restore(s, mode);
+        true
+    }
+
+    fn restore(&mut self, s: Snapshot, mode: TrimMode) {
+        self.playing = None;
+        self.drag = None;
+        self.drag_before = None;
+        self.pieces = s.pieces;
+        self.select(s.sel, mode); // swaps the preview if it's another clip
+        self.playhead = s.playhead.min(self.probe.frame_count().saturating_sub(1));
     }
 
     fn piece(&self) -> &Piece {
@@ -257,6 +330,25 @@ fn fmt_length(t: f64) -> String {
     if t < 60.0 { format!("{t:.1} s") } else { fmt_clock(t) }
 }
 
+/// A timeline label: "0:45", "12:30", or "1:02:30" in a clip of an hour
+/// or more (`dur`).
+fn fmt_mark(t: f64, dur: f64) -> String {
+    let t = t.round() as u64;
+    if dur >= 3600.0 { format!("{}:{:02}:{:02}", t / 3600, t / 60 % 60, t % 60) } else { format!("{}:{:02}", t / 60, t % 60) }
+}
+
+/// Seconds between labelled marks (`major`, at least `label_px` apart) and
+/// between the small marks (`minor`, dividing `major`, at least 10 px
+/// apart) for a timeline drawn at `px_per_s`.
+fn mark_steps(px_per_s: f64, label_px: f64) -> (f64, f64) {
+    const MAJOR: [f64; 14] = [1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0, 900.0, 1800.0, 3600.0, 7200.0];
+    const MINOR: [f64; 13] = [0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0, 300.0, 600.0, 1800.0];
+    let major = MAJOR.into_iter().find(|s| s * px_per_s >= label_px).unwrap_or(7200.0);
+    let divides = |m: f64| m < major && ((major / m) - (major / m).round()).abs() < 1e-9;
+    let minor = MINOR.into_iter().find(|&m| divides(m) && m * px_per_s >= 10.0).unwrap_or(major);
+    (major, minor)
+}
+
 fn probe_in_background(path: PathBuf) -> Probing {
     let (tx, rx) = channel();
     let p = path.clone();
@@ -299,8 +391,10 @@ impl TrimmerTab {
         if let Some(p) = l.pieces.iter().find(|p| p.probe.path == path) {
             let piece = Piece::whole(p.probe.clone());
             l.playing = None;
-            l.pieces.push(piece);
-            l.select(l.pieces.len() - 1, mode);
+            l.edit(|l| {
+                l.pieces.push(piece);
+                l.select(l.pieces.len() - 1, mode);
+            });
             return;
         }
         self.adding = Some(probe_in_background(path));
@@ -327,8 +421,10 @@ impl TrimmerTab {
                 match (result, self.loaded.as_mut()) {
                     (Ok(p), Some(l)) if p.frame_count() > 0 => {
                         l.playing = None;
-                        l.pieces.push(Piece::whole(Arc::new(p)));
-                        l.select(l.pieces.len() - 1, mode);
+                        l.edit(|l| {
+                            l.pieces.push(Piece::whole(Arc::new(p)));
+                            l.select(l.pieces.len() - 1, mode);
+                        });
                         self.message = None;
                     }
                     (Ok(_), _) => self.message = Some((format!("{} has no frames", path.display()), true, None)),
@@ -521,10 +617,10 @@ impl TrimmerTab {
             }
             ui.separator();
             if ui.button("Start [I]").on_hover_text("Start the piece at the playhead").clicked() {
-                l.set_start(l.playhead);
+                l.edit(|l| l.set_start(l.playhead));
             }
             if ui.button("End [O]").on_hover_text("End the piece at the playhead").clicked() {
-                l.set_end(l.playhead);
+                l.edit(|l| l.set_end(l.playhead));
             }
             let split_tip = match mode {
                 TrimMode::Fast => "Cut the piece in two at the keyframe before the playhead (Fast mode cuts on keyframes, one per second). To remove a part, split before and after it.",
@@ -535,7 +631,7 @@ impl TrimmerTab {
                 .on_hover_text(split_tip)
                 .on_disabled_hover_text("Move the playhead inside the piece (past its first second in Fast mode) to split it there");
             if split.clicked() {
-                l.split(mode);
+                l.edit(|l| l.split(mode));
             }
             ui.separator();
             // The volume slider is a few widgets side by side: start a new
@@ -581,15 +677,22 @@ impl TrimmerTab {
         let eff = piece.first(mode);
         let join_problem = if several && mode == TrimMode::Fast { fast_join_problem(&l.pieces) } else { None };
         ui.horizontal_wrapped(|ui| {
+            if ui.add_enabled(!l.undo.is_empty(), egui::Button::new("Undo").small()).on_hover_text("Undo the last change (Ctrl+Z)").clicked() {
+                l.undo(mode);
+            }
+            if ui.add_enabled(!l.redo.is_empty(), egui::Button::new("Redo").small()).on_hover_text("Redo (Ctrl+Y)").clicked() {
+                l.redo(mode);
+            }
+            ui.separator();
             if several {
                 if ui.add_enabled(l.sel > 0, egui::Button::new("Earlier").small()).on_hover_text("Move the piece one place earlier").clicked() {
-                    l.move_by(-1);
+                    l.edit(|l| l.move_by(-1));
                 }
                 if ui.add_enabled(l.sel + 1 < l.pieces.len(), egui::Button::new("Later").small()).on_hover_text("Move the piece one place later").clicked() {
-                    l.move_by(1);
+                    l.edit(|l| l.move_by(1));
                 }
                 if ui.add(egui::Button::new("Remove").small()).on_hover_text("Leave this piece out (Delete)").clicked() {
-                    l.remove(mode);
+                    l.edit(|l| l.remove(mode));
                 }
                 ui.label(RichText::new(format!("Piece {} of {}:", l.sel + 1, l.pieces.len())).strong());
             }
@@ -872,6 +975,16 @@ fn handle_keys(ctx: &egui::Context, l: &mut Loaded, mode: TrimMode) {
     let sec = l.probe.fps.round().max(1.0) as usize;
     ctx.input(|i| {
         let shift = i.modifiers.shift;
+        if i.modifiers.command {
+            // Ctrl+Z undo; Ctrl+Y or Ctrl+Shift+Z redo. Nothing else
+            // happens with Ctrl held (Ctrl+S isn't Split).
+            if i.key_pressed(Key::Z) && !shift {
+                l.undo(mode);
+            } else if i.key_pressed(Key::Y) || (i.key_pressed(Key::Z) && shift) {
+                l.redo(mode);
+            }
+            return;
+        }
         let step = if shift { sec } else { 1 };
         if i.key_pressed(Key::Space) {
             toggle_play(l, mode);
@@ -883,16 +996,16 @@ fn handle_keys(ctx: &egui::Context, l: &mut Loaded, mode: TrimMode) {
             stop_and_seek(l, (l.playhead + step).min(n - 1));
         }
         if i.key_pressed(Key::I) {
-            l.set_start(l.playhead);
+            l.edit(|l| l.set_start(l.playhead));
         }
         if i.key_pressed(Key::O) {
-            l.set_end(l.playhead);
+            l.edit(|l| l.set_end(l.playhead));
         }
         if i.key_pressed(Key::S) {
-            l.split(mode);
+            l.edit(|l| l.split(mode));
         }
         if i.key_pressed(Key::Delete) {
-            l.remove(mode);
+            l.edit(|l| l.remove(mode));
         }
         if i.key_pressed(Key::Home) {
             let f = l.piece().first(mode);
@@ -1092,22 +1205,36 @@ fn timeline(ui: &mut egui::Ui, l: &mut Loaded, colors: &crate::themes::Colors, m
     // Outline, so the track stays visible when it's the same color as the
     // background (OLED black).
     painter.rect_stroke(track, radius.min(8.0), Stroke::new(1.0, colors.border.0), egui::StrokeKind::Inside);
-    // Second marks along the top, labelled every 5 s.
+    // Time marks along the top: a labelled mark every few seconds, spaced
+    // so the labels never crowd (a 10 s clip: every second; 5 minutes:
+    // every 30 s), and small marks between them.
     let dur = l.probe.duration();
-    let mut s = 0.0;
-    while s <= dur {
-        let x = x_of(l.probe.frame_at(s));
-        let major = (s as u32).is_multiple_of(5);
-        painter.line_segment([pos2(x, track.top() - if major { 6.0 } else { 3.0 }), pos2(x, track.top())], Stroke::new(1.0, dim));
-        if major && s > 0.0 {
-            painter.text(pos2(x, rect.top()), egui::Align2::CENTER_TOP, format!("{}s", s as u32), egui::FontId::proportional(10.0), dim);
+    let font = egui::FontId::proportional(10.5);
+    let widest = painter.layout_no_wrap(fmt_mark(dur, dur), font.clone(), dim).size().x;
+    let (major, minor) = mark_steps(f64::from(track.width()) / dur.max(0.001), f64::from(widest) + 28.0);
+    let per_major = (major / minor).round() as u64;
+    let mut i = 0u64;
+    while i as f64 * minor <= dur + 1e-6 {
+        let t = i as f64 * minor;
+        let x = x_of(l.probe.frame_at(t));
+        let is_major = i.is_multiple_of(per_major);
+        let tick = if is_major { 6.0 } else { 3.0 };
+        painter.line_segment([pos2(x, track.top() - tick), pos2(x, track.top())], Stroke::new(1.0, dim));
+        if is_major && i > 0 {
+            let galley = painter.layout_no_wrap(fmt_mark(t, dur), font.clone(), dim);
+            let w = galley.size().x;
+            let left = (x - w / 2.0).clamp(rect.left(), rect.right() - w);
+            painter.galley(pos2(left, rect.top()), galley, dim);
         }
-        s += 1.0;
+        i += 1;
     }
-    // Keyframes as small ticks at the bottom of the track.
-    for &k in &l.probe.keyframes {
-        let x = x_of(k);
-        painter.line_segment([pos2(x, track.bottom() - 5.0), pos2(x, track.bottom())], Stroke::new(1.0, dim));
+    // Keyframes as small ticks at the bottom of the track (left out when
+    // they'd be a solid comb: long clips have one every second).
+    if track.width() / l.probe.keyframes.len().max(1) as f32 >= 6.0 {
+        for &k in &l.probe.keyframes {
+            let x = x_of(k);
+            painter.line_segment([pos2(x, track.bottom() - 5.0), pos2(x, track.bottom())], Stroke::new(1.0, dim));
+        }
     }
 
     // The other pieces of this clip, dimmer, numbered when there are several.
@@ -1157,13 +1284,17 @@ fn timeline(ui: &mut egui::Ui, l: &mut Loaded, colors: &crate::themes::Colors, m
     }
     if resp.drag_started() {
         if let Some(p) = resp.interact_pointer_pos() {
-            l.drag = Some(if near(p, piece.end) {
+            let drag = if near(p, piece.end) {
                 Drag::End
             } else if near(p, eff) {
                 Drag::Start
             } else {
                 Drag::Playhead
-            });
+            };
+            if drag != Drag::Playhead {
+                l.drag_before = Some(l.snapshot());
+            }
+            l.drag = Some(drag);
             l.playing = None;
         }
     }
@@ -1183,6 +1314,9 @@ fn timeline(ui: &mut egui::Ui, l: &mut Loaded, colors: &crate::themes::Colors, m
     }
     if resp.drag_stopped() {
         l.drag = None;
+        if let Some(before) = l.drag_before.take() {
+            l.record(before); // the whole drag is one undo step
+        }
     }
     if resp.clicked() {
         if let Some(p) = resp.interact_pointer_pos() {
@@ -1274,6 +1408,69 @@ mod tests {
         assert_eq!(l.piece().end, 299);
         l.set_start(299);
         assert_eq!(l.piece().start, 298);
+    }
+
+    #[test]
+    fn undo_and_redo_edits() {
+        let mode = TrimMode::Precise;
+        let mut l = Loaded::new(clip("a.mp4", 600));
+        // Nothing to undo yet; an edit that changes nothing isn't recorded.
+        assert!(!l.undo(mode));
+        l.playhead = 0;
+        l.edit(|l| l.set_start(0));
+        assert!(l.undo.is_empty());
+        // Split, then cut the end: two steps.
+        l.playhead = 120;
+        assert!(l.edit(|l| l.split(mode)));
+        l.playhead = 300;
+        l.edit(|l| l.set_end(300));
+        let ranges = |l: &Loaded| l.pieces.iter().map(|p| (p.start, p.end)).collect::<Vec<_>>();
+        assert_eq!(ranges(&l), [(0, 119), (120, 300)]);
+        assert!(l.undo(mode));
+        assert_eq!(ranges(&l), [(0, 119), (120, 599)]);
+        assert!(l.undo(mode));
+        assert_eq!(ranges(&l), [(0, 599)]);
+        assert_eq!(l.playhead, 120); // where it was before the split
+        assert!(!l.undo(mode));
+        assert!(l.redo(mode));
+        assert!(l.redo(mode));
+        assert_eq!(ranges(&l), [(0, 119), (120, 300)]);
+        assert!(!l.redo(mode));
+        // A new edit after an undo drops what could be redone.
+        l.undo(mode);
+        l.edit(|l| l.remove(mode));
+        assert!(l.redo.is_empty());
+        // Undoing an added clip goes back to the first clip's preview.
+        let b = clip("b.mp4", 300);
+        l.edit(|l| {
+            l.pieces.push(Piece::whole(b.clone()));
+            l.select(l.pieces.len() - 1, mode);
+        });
+        assert_eq!(l.probe.path, PathBuf::from("b.mp4"));
+        l.undo(mode);
+        assert_eq!(l.probe.path, PathBuf::from("a.mp4"));
+        assert_eq!(l.paths(), [PathBuf::from("a.mp4")]);
+    }
+
+    #[test]
+    fn timeline_marks_never_crowd() {
+        // (px per second, label width) -> (labelled every, small marks every)
+        assert_eq!(mark_steps(100.0, 50.0), (1.0, 0.1));
+        assert_eq!(mark_steps(1000.0 / 120.0, 50.0), (10.0, 2.0)); // a 2 min clip
+        assert_eq!(mark_steps(1000.0 / 300.0, 52.0), (30.0, 5.0)); // 5 minutes
+        assert_eq!(mark_steps(1000.0 / 3600.0, 60.0), (300.0, 60.0)); // an hour
+        for secs in [3.0, 30.0, 120.0, 600.0, 5400.0] {
+            for width in [400.0, 1000.0, 2400.0] {
+                let px = width / secs;
+                let (major, minor) = mark_steps(px, 56.0);
+                assert!(major * px >= 56.0 || major == 7200.0, "{secs} s at {width} px");
+                assert!(minor * px >= 10.0 || minor == major, "{secs} s at {width} px");
+                assert!(((major / minor) - (major / minor).round()).abs() < 1e-9);
+            }
+        }
+        assert_eq!(fmt_mark(45.0, 300.0), "0:45");
+        assert_eq!(fmt_mark(750.0, 900.0), "12:30");
+        assert_eq!(fmt_mark(3750.0, 4000.0), "1:02:30");
     }
 
     #[test]

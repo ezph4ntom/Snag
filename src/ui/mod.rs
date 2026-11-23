@@ -223,6 +223,11 @@ pub fn run(args: UiArgs) -> Result<()> {
             crate::themes::apply(&ctx, &theme, true);
             // UI size is set with the -/+ buttons in Settings only.
             ctx.options_mut(|o| o.zoom_with_keyboard = false);
+            // A mouse-wheel notch scrolls as far as in other Windows apps
+            // (egui's 40 px is one *line*; Windows scrolls 3 by default).
+            // Touchpads report pixels and aren't affected.
+            let lines = crate::win::wheel_scroll_lines() as f32;
+            ctx.options_mut(|o| o.input_options.line_scroll_speed = 40.0 * lines);
             // No built-in fade animations (scrollbars, hover colors): each one
             // repaints the whole window at the monitor's refresh rate (144 Hz
             // here), which made switching to a tall tab cost ~200 ms of CPU.

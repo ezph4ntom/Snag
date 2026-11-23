@@ -311,7 +311,11 @@ impl AudioSource for MixSource {
             self.scratch.clear();
             c.source.poll(&mut self.scratch, start, now);
             for mut p in self.scratch.drain(..) {
-                if c.gain != 1.0 {
+                if c.gain > 1.0 {
+                    for v in &mut p.samples {
+                        *v = boost(*v, c.gain);
+                    }
+                } else if c.gain != 1.0 {
                     for v in &mut p.samples {
                         *v *= c.gain;
                     }
@@ -329,6 +333,16 @@ impl Drop for MixSource {
             *g = CaptureState::default();
         }
     }
+}
+
+/// A source turned up past 100 %: everything gets `gain` times louder, but
+/// peaks that would go past full scale are rounded off (a soft knee from
+/// 80 %, about -2 dB) instead of clipping harshly.
+fn boost(v: f32, gain: f32) -> f32 {
+    const KNEE: f32 = 0.8;
+    let x = v * gain;
+    let a = x.abs();
+    if a <= KNEE { x } else { (KNEE + (1.0 - KNEE) * ((a - KNEE) / (1.0 - KNEE)).tanh()).copysign(x) }
 }
 
 /// Sums packets from several sources on one timeline.
@@ -398,6 +412,19 @@ impl MixBuffer {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn boost_is_louder_but_never_past_full_scale() {
+        assert_eq!(super::boost(0.1, 2.0), 0.2);
+        assert_eq!(super::boost(-0.3, 2.0), -0.6);
+        let mut last = 0.0;
+        for i in 1..=200 {
+            let v = super::boost(i as f32 / 100.0, 2.0);
+            assert!(v >= last && v <= 1.0, "{i}: {v}");
+            last = v;
+        }
+        assert!(super::boost(-0.9, 2.0) < -0.8);
+    }
     use super::*;
 
     fn tone(frames: usize, v: f32) -> Vec<f32> {

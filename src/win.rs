@@ -141,6 +141,23 @@ pub fn taskbar_is_light() -> bool {
     ok && value == 1
 }
 
+/// Lines to scroll per mouse-wheel notch (Settings > Bluetooth & devices >
+/// Mouse; 3 by default). "One screen at a time" counts as 10.
+pub fn wheel_scroll_lines() -> u32 {
+    use windows::Win32::UI::WindowsAndMessaging::{SPI_GETWHEELSCROLLLINES, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW};
+    let mut lines = 3u32;
+    // SAFETY: SPI_GETWHEELSCROLLLINES writes one UINT.
+    let ok = unsafe {
+        SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, Some(&mut lines as *mut u32 as *mut _), SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0))
+    }
+    .is_ok();
+    match (ok, lines) {
+        (false, _) => 3,
+        (_, u32::MAX) => 10, // WHEEL_PAGESCROLL
+        (_, n) => n.clamp(1, 10),
+    }
+}
+
 /// Shows a modal error dialog (for fatal startup errors in GUI builds,
 /// where there's no console to print to).
 pub fn error_box(text: &str) {
@@ -555,5 +572,16 @@ mod local_time_tests {
         assert_eq!(LocalTime { year: 1970, month: 1, day: 1, hour: 0, minute: 0 }.day_number(), 0);
         assert!(LocalTime::from_file_name("holiday.mp4").is_none());
         assert!(LocalTime::from_file_name("Clip_abcd-11-11_14-03-22.mp4").is_none());
+    }
+}
+
+#[cfg(test)]
+mod wheel_tests {
+    #[test]
+    fn wheel_lines_are_sane() {
+        // Windows' setting (3 unless changed), always 1..=10.
+        let n = super::wheel_scroll_lines();
+        assert!((1..=10).contains(&n), "{n}");
+        println!("wheel scrolls {n} lines per notch");
     }
 }

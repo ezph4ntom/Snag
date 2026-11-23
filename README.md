@@ -33,7 +33,7 @@
 
 **Record whole sessions.** Start and stop a recording with <kbd>Ctrl</kbd>+<kbd>F9</kbd>, or let Snag record everything from the moment it starts and keep only what you want.
 
-**Your sound, your way.** Game, Discord, Spotify and your microphone, mixed into every clip. Record the whole PC, or tick just the apps you want, each with its own volume, even when they play on different headsets or speakers.
+**Your sound, your way.** Game, Discord, Spotify and your microphone, mixed into every clip. Record the whole PC, or tick just the apps you want, each with its own volume (up to 200 % for a quiet mic), even when they play on different headsets or speakers.
 
 **Light on your PC.** Uses your graphics card's video encoder (NVIDIA, AMD or Intel) and picks the best quality your hardware handles. While you play, Snag is just a tray icon.
 
@@ -41,7 +41,7 @@
 
 **Share with a link.** Press **Upload** on a clip and the link is copied for you. Connect your Streamable account for links that last, or skip it and get a temporary Litterbox link.
 
-**Edit in seconds.** A built-in clip editor with sound: trim, split and cut parts out, join clips together in any order, and save one clip or each piece. Cut losslessly in an instant, or frame-exact. Edited clips keep their original date.
+**Edit in seconds.** A built-in clip editor with sound: trim, split and cut parts out, join clips together in any order, and save one clip or each piece, with <kbd>Ctrl</kbd>+<kbd>Z</kbd> when a cut goes wrong. Cut losslessly in an instant, or frame-exact. Edited clips keep their original date.
 
 **Any key you like.** Any key or mouse button works as a hotkey, and it works inside games.
 

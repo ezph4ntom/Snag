@@ -18,6 +18,13 @@ For using Snag, see the [README](../README.md); for testers, [TESTING.md](../TES
 Any of these already installed? Skip it. Check with `rustc --version`,
 `cargo --version`, `ffmpeg -version`.
 
+Snag uses whichever ffmpeg it finds (`bin\` next to the exe, then `PATH`),
+so testers may run any version: avoid options that changed between
+releases. ffmpeg 9.1 rejects `-thread_queue_size` on an input (a no-op since
+7.0), so the recorder only passes it to ffmpeg 6 and older
+(`encode::ffmpeg::input_queue`). To test another version, point
+`SNAG_FFMPEG_DIR` at its `bin` folder.
+
 ### Steps
 
 ```powershell
@@ -239,10 +246,10 @@ ffmpeg details that matter (all measured; see comments in `src/encode/ffmpeg.rs`
 | `capture/` | monitors, D3D11 device, WGC session (monitor or one window), GPU NV12 converter, screenshots, app window list (`window.rs`) | 1 capture |
 | `encode/` | `VideoEncoder` trait, ffmpeg sidecar, encoder detection | 1 capture |
 | `buffer/` | pacer + recorder + audio thread, frame sources, HLS playlist, clip saving | 2 buffer + clips |
-| `audio/` | WASAPI loopback capture, test beep source | audio |
+| `audio/` | WASAPI loopback capture, mixing (volumes up to 200 %: boosted sources get a soft limiter, `mixer::boost`), test beep source | audio |
 | `hotkeys/`, `app/` | hotkey parsing/registration, keyboard hook; core process (tray, focus hook, controller, IPC) | 3 hotkeys |
 | `sound.rs` | clip sound via `PlaySound` (no audio thread while idle) | 3 hotkeys |
-| `trimmer/`, `ui/trimmer_tab.rs` | probe, preview decoder, fast/precise export of an edit (pieces of one or more clips: one trimmed clip, one joined `_edit` clip via the concat demuxer with per-part `duration`/`outpoint` so video stays frame-exact at joins, or one file per piece); the clip editor UI (split, remove, reorder, "Add clip" from the library) | 4 trimmer |
+| `trimmer/`, `ui/trimmer_tab.rs` | probe, preview decoder, fast/precise export of an edit (pieces of one or more clips: one trimmed clip, one joined `_edit` clip via the concat demuxer with per-part `duration`/`outpoint` so video stays frame-exact at joins, or one file per piece); the clip editor UI (split, remove, reorder, "Add clip" from the library, undo/redo of every change to the pieces) | 4 trimmer |
 | `library.rs`, `ui/library_tab.rs` | clip library (favorites, collections, upload records in `library.json`), cards, thumbnails, delete to the Recycle Bin, Uploads list, Streamable login | library |
 | `update.rs`, `ui/about.rs` | GitHub release check, installer download + SHA-256 check, silent install; Settings → About (version, build commit from `build.rs`, links) | updates |
 | `ui/whats_new.rs` | "What's new" dialog the first time the window opens after an update (built-in notes per version, `settings.ui.last_seen_version`; a fresh install marks its version as seen); also Settings → About → What's new. **Every release adds its notes at the top of `HISTORY`** (a unit test fails until the current version has some) | updates |

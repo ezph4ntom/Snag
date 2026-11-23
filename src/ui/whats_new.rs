@@ -26,6 +26,18 @@ pub struct Notes {
 /// Newest first. The top entry must be the current version (tested).
 pub const HISTORY: &[Notes] = &[
     Notes {
+        version: "0.7.12",
+        new: &[
+            "Clip editor: Ctrl+Z undoes a cut, Ctrl+Y redoes it (or the Undo / Redo buttons).",
+            "Sound: turn a quiet mic or app up to 200 %.",
+        ],
+        fixed: &[
+            "Recording works with the newest ffmpeg (9.1).",
+            "The mouse wheel scrolls faster, like in other apps.",
+            "Long clips: the editor's timeline labels no longer overlap.",
+        ],
+    },
+    Notes {
         version: "0.7.11",
         new: &["Live preview: right-click it to pick Normal (30 fps) or Smooth (60 fps)."],
         fixed: &[

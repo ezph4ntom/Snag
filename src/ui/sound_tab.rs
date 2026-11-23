@@ -442,7 +442,7 @@ impl SoundTab {
             ui.add_space(6.0);
             ui.add_enabled_ui(include, |ui| {
                 widgets::value_box(ui, &theme, &format!("{}", (volume * 100.0).round()), "%", 64.0);
-                if widgets::pill_slider(ui, &theme, &mut volume, slider_w).changed() {
+                if widgets::pill_slider_to(ui, &theme, &mut volume, MAX_VOLUME, slider_w).on_hover_text(BOOST_TIP).changed() {
                     volume = (volume * 100.0).round() / 100.0;
                 }
             });
@@ -492,7 +492,7 @@ impl SoundTab {
                     ui.label(RichText::new(format!("{} %", (volume * 100.0).round())).color(theme.colors.text_dim.0));
                 });
             });
-            if widgets::pill_slider(ui, &theme, &mut volume, w).changed() {
+            if widgets::pill_slider_to(ui, &theme, &mut volume, MAX_VOLUME, w).on_hover_text(BOOST_TIP).changed() {
                 volume = (volume * 100.0).round() / 100.0;
                 Self::apply(&mut a, row, true, volume);
             }
@@ -501,6 +501,9 @@ impl SoundTab {
         self.commit(shared, a);
     }
 }
+
+const MAX_VOLUME: f32 = crate::config::AudioSettings::MAX_VOLUME;
+const BOOST_TIP: &str = "Past the mark (100 %) boosts a quiet source, up to 200 %. Double-click: back to 100 %.";
 
 /// A thin horizontal level meter (-60 dB left, 0 dB right).
 fn meter(ui: &mut egui::Ui, theme: &crate::themes::Theme, peak: f32, on: bool, width: f32) {
