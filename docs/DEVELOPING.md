@@ -79,7 +79,16 @@ against GitHub's digest and runs it with `/SILENT /RELAUNCH=1`, so a release
 only needs the installer attached. `/RELAUNCH=1` starts Snag again at the
 end of `CurStepChanged(ssPostInstall)`, after winget (Inno runs `[Run]`
 entries before that step, so Snag would start while ffmpeg is being
-installed). Portable copies get the release page
+installed). It starts Snag through `explorer.exe` (so does the "Start Snag
+now" box): Inno 6.4+ turns on Windows' RedirectionGuard for Setup, and
+everything Setup starts itself inherits it (even `ExecAsOriginalUser` when
+Setup isn't elevated). A Snag with it can't follow links made without admin
+rights, such as winget's `Links\ffmpeg.exe`: error 448 "untrusted mount
+point", so no ffmpeg until it is restarted by hand. (Not visible on a PC
+with UAC off: there every link is made as admin.) The updater passes
+`/LOG` so each update leaves `logs\install.log` (what the ffmpeg check
+found, winget's exit code). `.dev\inno-test.ps1` (local) tests all this with
+a renamed copy of the script. Portable copies get the release page
 opened instead. To see the button without a newer release, start the
 window as an older version: `snag.exe --ui --pretend-version 0.1.0`.
 

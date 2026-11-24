@@ -12,7 +12,8 @@
 ; * Snag's own updater runs it with /SILENT /RELAUNCH=1: it updates in
 ;   place and starts Snag again afterwards, after ffmpeg if that had to be
 ;   installed ([Run] entries run BEFORE ssPostInstall, where winget runs,
-;   so the relaunch is in CurStepChanged instead).
+;   so the relaunch is in CurStepChanged instead), as the original user so
+;   Snag doesn't inherit Setup's RedirectionGuard (see CurStepChanged).
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"
@@ -71,7 +72,9 @@ Name: "{autoprograms}\Snag"; Filename: "{app}\snag.exe"; Comment: "Game clipping
 Name: "{autodesktop}\Snag"; Filename: "{app}\snag.exe"; Tasks: desktopicon; Comment: "Game clipping"
 
 [Run]
-Filename: "{app}\snag.exe"; Description: "Start Snag now"; Flags: nowait postinstall skipifsilent
+; Through Explorer, like a double-click: started by Setup itself, Snag would
+; inherit its RedirectionGuard (see StartSnag in [Code]).
+Filename: "{win}\explorer.exe"; Parameters: """{app}\snag.exe"""; Description: "Start Snag now"; Flags: nowait postinstall skipifsilent
 ; (After an update from inside Snag, CurStepChanged starts it again.)
 
 [UninstallRun]
@@ -87,39 +90,119 @@ end;
 function ExpandEnvironmentStrings(lpSrc: String; lpDst: String; nSize: DWORD): DWORD;
   external 'ExpandEnvironmentStringsW@kernel32.dll stdcall';
 
+function CreateFile(lpFileName: String; dwDesiredAccess, dwShareMode, lpSecurityAttributes,
+  dwCreationDisposition, dwFlagsAndAttributes, hTemplateFile: Integer): Integer;
+  external 'CreateFileW@kernel32.dll stdcall';
+function CloseHandle(hObject: Integer): Boolean;
+  external 'CloseHandle@kernel32.dll stdcall';
+
+var
+  FfmpegChecked: Boolean;
+  FfmpegAt: String;
+
 { "%LOCALAPPDATA%\..." -> the real folder (PATH values in the registry
   hold such names). }
 function ExpandEnv(const S: String): String;
 var
   N: DWORD;
 begin
-  Result := StringOfChar(' ', 8192);
-  N := ExpandEnvironmentStrings(S, Result, 8192);
-  if (N = 0) or (N > 8192) then
+  N := ExpandEnvironmentStrings(S, '', 0);
+  if N = 0 then
+  begin
+    Result := S;
+    Exit;
+  end;
+  Result := StringOfChar(' ', N);
+  N := ExpandEnvironmentStrings(S, Result, N);
+  if N = 0 then
     Result := S
   else
     SetLength(Result, N - 1);
 end;
 
-function OnPath(const Dirs: String): Boolean;
+{ The file exists and, if it is a link, so does what it points to.
+  FileExists looks at a link itself, so a link left pointing at nothing by
+  a half-finished winget upgrade counted as ffmpeg; CreateFile follows it.
+  Error 448 (untrusted mount point): Setup's own RedirectionGuard won't
+  follow a link a normal user made (winget's are), but Snag, started as the
+  original user, can: that counts as there. }
+function FileWorks(const Name: String): Boolean;
+var
+  H: Integer;
 begin
-  Result := (Dirs <> '') and (FileSearch('ffmpeg.exe', ExpandEnv(Dirs)) <> '');
+  { No access needed, share everything, OPEN_EXISTING. }
+  H := CreateFile(Name, 0, 7, 0, 3, 0, 0);
+  Result := H <> -1;
+  if Result then
+    CloseHandle(H)
+  else if DLLGetLastError = 448 then
+  begin
+    Log('ffmpeg: ' + Name + ' is a link Setup may not follow (RedirectionGuard); counting it as there');
+    Result := True;
+  end;
 end;
 
-function FfmpegMissing: Boolean;
+{ Where Snag itself looks (paths::find_tool), ';'-separated: a bin folder
+  next to the app (portable builds), winget's links, this process's PATH
+  and the PATH saved in the registry. (The inherited PATH alone can be
+  stale: an update then "installed" ffmpeg again, which upgraded it while
+  Snag was already starting.) }
+function FfmpegDirs: String;
 var
   P: String;
 begin
-  { Where Snag itself looks (paths::find_tool): a bin folder next to the
-    app (portable builds), winget's links, this process's PATH and the
-    PATH saved in the registry. The inherited PATH alone can be stale
-    (ffmpeg installed after Snag started): an update then "installed"
-    ffmpeg again, which upgraded it while Snag was already starting. }
-  Result := not (FileExists(ExpandConstant('{app}\bin\ffmpeg.exe'))
-    or FileExists(ExpandConstant('{localappdata}\Microsoft\WinGet\Links\ffmpeg.exe'))
-    or OnPath(GetEnv('PATH'))
-    or (RegQueryStringValue(HKCU, 'Environment', 'Path', P) and OnPath(P))
-    or (RegQueryStringValue(HKLM, 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment', 'Path', P) and OnPath(P)));
+  Result := ExpandConstant('{app}\bin;{localappdata}\Microsoft\WinGet\Links;') + GetEnv('PATH');
+  if RegQueryStringValue(HKCU, 'Environment', 'Path', P) then
+    Result := Result + ';' + P;
+  if RegQueryStringValue(HKLM, 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment', 'Path', P) then
+    Result := Result + ';' + P;
+  Result := ExpandEnv(Result);
+end;
+
+{ The first working ffmpeg.exe in Dirs, or ''. Logs the broken links it skips. }
+function FindFfmpegIn(Dirs: String): String;
+var
+  Dir, F: String;
+  I: Integer;
+begin
+  Result := '';
+  Dirs := Dirs + ';';
+  while (Result = '') and (Dirs <> '') do
+  begin
+    I := Pos(';', Dirs);
+    Dir := Trim(Copy(Dirs, 1, I - 1));
+    Delete(Dirs, 1, I);
+    if Dir <> '' then
+    begin
+      F := AddBackslash(Dir) + 'ffmpeg.exe';
+      if FileExists(F) then
+        if FileWorks(F) then
+          Result := F
+        else
+          Log('ffmpeg: skipping ' + F + ': a broken link (what it points to is gone)');
+    end;
+  end;
+end;
+
+function FindFfmpeg: String;
+begin
+  Result := FindFfmpegIn(FfmpegDirs);
+end;
+
+{ Checked once (Inno asks a task's Check several times); the result goes to
+  the log, which Snag's updater asks for (/LOG). }
+function FfmpegMissing: Boolean;
+begin
+  if not FfmpegChecked then
+  begin
+    FfmpegChecked := True;
+    FfmpegAt := FindFfmpeg;
+    if FfmpegAt <> '' then
+      Log('ffmpeg: found ' + FfmpegAt)
+    else
+      Log('ffmpeg: not found in ' + FfmpegDirs);
+  end;
+  Result := FfmpegAt = '';
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
@@ -135,15 +218,45 @@ begin
   Result := '';
 end;
 
+{ Starts Snag the way a double-click does: through Explorer. Whatever Setup
+  starts itself (Exec, and even ExecAsOriginalUser when Setup isn't
+  elevated) inherits Setup's RedirectionGuard: Snag then can't follow
+  winget's ffmpeg links (made without admin rights), gets error 448 and
+  finds no ffmpeg until it is restarted by hand. The explorer.exe started
+  here hands the file to the running Explorer, which starts Snag. }
+procedure StartSnag;
+var
+  Code: Integer;
+begin
+  Log('starting Snag again');
+  if not Exec(ExpandConstant('{win}\explorer.exe'), AddQuotes(ExpandConstant('{app}\snag.exe')), '', SW_SHOWNORMAL, ewNoWait, Code) then
+  begin
+    Log('explorer.exe could not be started (' + SysErrorMessage(Code) + '); starting Snag directly');
+    Exec(ExpandConstant('{app}\snag.exe'), '', ExpandConstant('{app}'), SW_SHOWNORMAL, ewNoWait, Code);
+  end;
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   Code: Integer;
+  Started: Boolean;
+  After: String;
 begin
   if (CurStep = ssPostInstall) and WizardIsTaskSelected('ffmpeg') then
   begin
     WizardForm.StatusLabel.Caption := 'Installing ffmpeg with winget (this can take a minute)...';
-    if not Exec('winget', 'install --id Gyan.FFmpeg -e --silent --accept-package-agreements --accept-source-agreements',
-                '', SW_HIDE, ewWaitUntilTerminated, Code) or ((Code <> 0) and (Code <> -1978335189)) then
+    Started := Exec('winget', 'install --id Gyan.FFmpeg -e --silent --accept-package-agreements --accept-source-agreements',
+                    '', SW_HIDE, ewWaitUntilTerminated, Code);
+    if Started then
+      Log('winget finished with code ' + IntToStr(Code))
+    else
+      Log('winget could not be started: ' + SysErrorMessage(Code));
+    After := FindFfmpeg;
+    if After <> '' then
+      Log('ffmpeg after winget: found ' + After)
+    else
+      Log('ffmpeg after winget: still not found');
+    if not Started or ((Code <> 0) and (Code <> -1978335189)) then
       MsgBox('ffmpeg could not be installed automatically (winget code ' + IntToStr(Code) + ').' + #13#10#13#10 +
              'Open PowerShell or Terminal and run:' + #13#10 + '    winget install Gyan.FFmpeg' + #13#10 +
              'Snag starts recording by itself once it is installed.', mbInformation, MB_OK);
@@ -151,5 +264,5 @@ begin
   { After an update from inside Snag: start it again, now that ffmpeg is in
     place (winget above has finished). }
   if (CurStep = ssPostInstall) and Relaunch then
-    Exec(ExpandConstant('{app}\snag.exe'), '', ExpandConstant('{app}'), SW_SHOWNORMAL, ewNoWait, Code);
+    StartSnag;
 end;

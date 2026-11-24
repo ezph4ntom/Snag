@@ -220,10 +220,16 @@ fn sha256_hex(data: &[u8]) -> Result<String> {
 
 /// Runs the installer silently. It closes Snag, updates the files where
 /// Snag is installed and starts it again (`/RELAUNCH=1`).
+/// Its log (what it found, winget's result) goes to `logs\install.log`.
 pub fn run_installer(path: &Path) -> Result<()> {
+    use std::os::windows::process::CommandExt;
     use std::process::Stdio;
+    let logs = crate::paths::log_dir();
+    let _ = std::fs::create_dir_all(&logs);
     std::process::Command::new(path)
         .args(["/SILENT", "/SP-", "/SUPPRESSMSGBOXES", "/NORESTART", "/NOCANCEL", "/RELAUNCH=1"])
+        // Quoted the way Inno documents it (the path may have spaces).
+        .raw_arg(format!("/LOG=\"{}\"", logs.join("install.log").display()))
         // Not our pipes to the tray app: they must close when this window does.
         .stdin(Stdio::null())
         .stdout(Stdio::null())

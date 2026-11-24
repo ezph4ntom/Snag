@@ -198,7 +198,7 @@ impl Controller {
             // Maybe being installed or updated right now (winget): look
             // again every few seconds and start once it's there. The user
             // is told how to install it only if it stays missing.
-            log::warn!("ffmpeg not found ({e:#}); looking again every {} s", FFMPEG_RECHECK.as_secs());
+            log::warn!("{}; looking again every {} s", ffmpeg_problem(&e).0, FFMPEG_RECHECK.as_secs());
             self.note = WAITING_FOR_FFMPEG.into();
             self.ffmpeg_missing = Some(FfmpegMissing { since: Instant::now(), checked: Instant::now(), told: false });
         }
@@ -232,23 +232,16 @@ impl Controller {
             return;
         }
         m.checked = Instant::now();
-        if crate::encode::detect::ffmpeg_version().is_err() {
-            // Found but didn't run (moved, half-updated)? Search afresh next time.
-            crate::paths::forget_tools();
+        if let Err(e) = crate::encode::detect::ffmpeg_version() {
             if !m.told && m.since.elapsed() >= FFMPEG_TELL_AFTER {
                 m.told = true;
-                log::error!("ffmpeg still not found after {} s", m.since.elapsed().as_secs());
+                let (why, text) = ffmpeg_problem(&e);
+                log::error!("still no working ffmpeg after {} s: {why}", m.since.elapsed().as_secs());
                 // On its own thread: the dialog blocks until closed.
-                std::thread::spawn(|| {
-                    crate::win::error_box(
-                        "Snag needs ffmpeg to record, and it isn't installed.\n\n\
-                         To install it, open PowerShell (or Terminal) and run:\n\n\
-                             winget install Gyan.FFmpeg\n\n\
-                         Snag starts recording by itself once ffmpeg is installed.\n\
-                         (Or put ffmpeg.exe and ffprobe.exe in a \"bin\" folder next to snag.exe.)",
-                    );
-                });
+                std::thread::spawn(move || crate::win::error_box(&text));
             }
+            // Found but didn't run (moved, half-updated)? Search afresh next time.
+            crate::paths::forget_tools();
             return;
         }
         log::info!(
@@ -1075,8 +1068,88 @@ fn error_beep() {
     }
 }
 
+/// Why ffmpeg can't be used (`err`: from `detect::ffmpeg_version`): a line
+/// for the log and the text for the dialog.
+fn ffmpeg_problem(err: &anyhow::Error) -> (String, String) {
+    let exe = crate::paths::ffmpeg_exe();
+    let found = exe.is_absolute().then_some(exe);
+    explain_ffmpeg_problem(found, &crate::paths::broken_tool_links("ffmpeg"), &format!("{err:#}"))
+}
+
+fn explain_ffmpeg_problem(found: Option<&std::path::Path>, broken: &[(PathBuf, PathBuf)], err: &str) -> (String, String) {
+    const REINSTALL: &str = "To reinstall it, open PowerShell (or Terminal) and run these two commands:\n\n    \
+                             winget uninstall Gyan.FFmpeg\n    winget install Gyan.FFmpeg\n\n\
+                             Snag starts recording by itself once ffmpeg works.";
+    if let Some(exe) = found {
+        return (
+            format!("ffmpeg found at {} but it doesn't run: {err}", exe.display()),
+            format!("Snag found ffmpeg, but it doesn't run:\n\n{}\n({err})\n\n{REINSTALL}", exe.display()),
+        );
+    }
+    // ERROR_UNTRUSTED_MOUNT_POINT: started by an installer with Windows'
+    // RedirectionGuard on (it's inherited), Snag may not follow winget's
+    // ffmpeg links, which are fine. A normal start doesn't have it.
+    if err.contains("os error 448") {
+        return (
+            format!("ffmpeg can't be reached: Windows blocked following its link (RedirectionGuard, inherited from whatever started Snag): {err}"),
+            "Snag can't reach ffmpeg right now: Windows blocked it from following ffmpeg's shortcut, \
+             because of the way Snag was started (by an installer).\n\n\
+             Quit Snag (right-click the tray icon > Quit) and start it again from the Start menu."
+                .to_string(),
+        );
+    }
+    if let Some((link, target)) = broken.first() {
+        return (
+            format!("ffmpeg not found: {} is a broken link to {} (missing)", link.display(), target.display()),
+            format!(
+                "Snag needs ffmpeg to record, but its install is broken: this shortcut points to a file that no longer exists:\n\n{}\n\u{2192} {}\n\n{REINSTALL}",
+                link.display(),
+                target.display()
+            ),
+        );
+    }
+    (
+        format!("ffmpeg not found (bin folder, PATH, WinGet Links, registry PATH): {err}"),
+        "Snag needs ffmpeg to record, and it isn't installed.\n\n\
+         To install it, open PowerShell (or Terminal) and run:\n\n    \
+         winget install Gyan.FFmpeg\n\n\
+         Snag starts recording by itself once ffmpeg is installed.\n\
+         (Or put ffmpeg.exe and ffprobe.exe in a \"bin\" folder next to snag.exe.)"
+            .to_string(),
+    )
+}
+
 /// `1:02:03` / `4:05`.
 fn fmt_duration(seconds: f64) -> String {
     let s = seconds.max(0.0) as u64;
     if s >= 3600 { format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60) } else { format!("{}:{:02}", s / 60, s % 60) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::explain_ffmpeg_problem;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn the_ffmpeg_message_says_what_is_wrong() {
+        let broken = [(PathBuf::from(r"C:\L\ffmpeg.exe"), PathBuf::from(r"C:\P\ffmpeg-9.0.2\bin\ffmpeg.exe"))];
+        // Found but doesn't run: says where, and the error.
+        let (log, text) = explain_ffmpeg_problem(Some(Path::new(r"C:\f\ffmpeg.exe")), &broken, "boom");
+        assert!(log.contains(r"C:\f\ffmpeg.exe") && log.contains("boom"), "{log}");
+        assert!(text.contains(r"C:\f\ffmpeg.exe") && text.contains("winget uninstall"), "{text}");
+        // Not found, but a broken winget link: names the link and its target.
+        let (log, text) = explain_ffmpeg_problem(None, &broken, "not found");
+        assert!(log.contains("broken link") && log.contains("ffmpeg-9.0.2"), "{log}");
+        assert!(text.contains(r"C:\L\ffmpeg.exe") && text.contains("winget install Gyan.FFmpeg"), "{text}");
+        // The friend's case: started by the 0.7.13/0.7.14 installer, which
+        // passed on RedirectionGuard: winget's links can't be followed.
+        let err = "could not run ffmpeg.exe: The path cannot be traversed because it contains an untrusted mount point. (os error 448)";
+        let (log, text) = explain_ffmpeg_problem(None, &[], err);
+        assert!(log.contains("RedirectionGuard") && log.contains("448"), "{log}");
+        assert!(text.contains("start it again") && !text.contains("winget"), "{text}");
+        // Nothing at all: the install instructions.
+        let (log, text) = explain_ffmpeg_problem(None, &[], "not found");
+        assert!(log.starts_with("ffmpeg not found"), "{log}");
+        assert!(text.contains("isn't installed") && !text.contains("uninstall"), "{text}");
+    }
 }

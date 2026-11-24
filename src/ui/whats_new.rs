@@ -26,6 +26,14 @@ pub struct Notes {
 /// Newest first. The top entry must be the current version (tested).
 pub const HISTORY: &[Notes] = &[
     Notes {
+        version: "0.7.15",
+        new: &[],
+        fixed: &[
+            "After an update, Snag finds ffmpeg again (Windows blocked it until a restart).",
+            "If ffmpeg can't be used, the message says why.",
+        ],
+    },
+    Notes {
         version: "0.7.14",
         new: &[],
         fixed: &[

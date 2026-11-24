@@ -27,7 +27,8 @@ pub fn ffmpeg_version() -> Result<String> {
         .output()
         .with_context(|| format!("could not run {}", crate::paths::ffmpeg_exe().display()))?;
     if !out.status.success() {
-        bail!("ffmpeg -version failed");
+        let why = String::from_utf8_lossy(&out.stderr).lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string();
+        bail!("ffmpeg -version failed ({}){}", out.status, if why.is_empty() { String::new() } else { format!(": {why}") });
     }
     let line = String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or("ffmpeg").to_string();
     Ok(FOUND.get_or_init(|| line).clone())

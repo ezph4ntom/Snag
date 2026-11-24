@@ -148,6 +148,11 @@ pub fn clip_sound_file() -> PathBuf {
 /// saved in the registry (our inherited PATH is a copy from when we started).
 fn find_tool(name: &str) -> Option<PathBuf> {
     let file = format!("{name}.exe");
+    find_in(&tool_dirs(), &file).or_else(|| find_in(&late_tool_dirs(), &file))
+}
+
+/// The folders searched first (see `find_tool`).
+fn tool_dirs() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
     if let Some(d) = std::env::var_os("SNAG_FFMPEG_DIR") {
         dirs.push(PathBuf::from(d));
@@ -158,11 +163,45 @@ fn find_tool(name: &str) -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("PATH") {
         dirs.extend(std::env::split_paths(&path));
     }
-    let found = dirs.iter().map(|d| d.join(&file)).find(|p| p.is_file());
-    found.or_else(|| {
-        let winget = std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join(r"Microsoft\WinGet\Links"));
-        winget.into_iter().chain(registry_path_dirs()).map(|d| d.join(&file)).find(|p| p.is_file())
-    })
+    dirs
+}
+
+/// Where a tool installed after this process started shows up.
+fn late_tool_dirs() -> Vec<PathBuf> {
+    let winget = std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join(r"Microsoft\WinGet\Links"));
+    winget.into_iter().chain(registry_path_dirs()).collect()
+}
+
+/// The first `dir\file` that is a file. A symbolic link counts only if what
+/// it points to exists (winget installs ffmpeg as links).
+fn find_in(dirs: &[PathBuf], file: &str) -> Option<PathBuf> {
+    dirs.iter().map(|d| d.join(file)).find(|p| p.is_file())
+}
+
+/// `dir\file` entries that are links to something that no longer exists,
+/// with where they point: a half-finished winget upgrade leaves these.
+/// Judged by the target itself, not by following the link: a process that
+/// inherited an installer's RedirectionGuard can't follow winget's links
+/// (error 448) although they're fine.
+fn broken_links_in(dirs: &[PathBuf], file: &str) -> Vec<(PathBuf, PathBuf)> {
+    let mut out: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for link in dirs.iter().map(|d| d.join(file)) {
+        let is_link = std::fs::symlink_metadata(&link).is_ok_and(|m| m.file_type().is_symlink());
+        let Some(target) = is_link.then(|| std::fs::read_link(&link).ok()).flatten() else { continue };
+        // A relative target is relative to the link's folder.
+        let full = link.parent().map_or(target.clone(), |d| d.join(&target));
+        if std::fs::symlink_metadata(&full).is_err() && !out.iter().any(|(l, _)| *l == link) {
+            out.push((link, target));
+        }
+    }
+    out
+}
+
+/// Broken links named like the tool where Snag looks for it, with their
+/// targets (for telling the user why ffmpeg isn't found).
+pub fn broken_tool_links(name: &str) -> Vec<(PathBuf, PathBuf)> {
+    let dirs: Vec<PathBuf> = tool_dirs().into_iter().chain(late_tool_dirs()).collect();
+    broken_links_in(&dirs, &format!("{name}.exe"))
 }
 
 /// A found tool, remembered; while it isn't found, the bare name (so the
@@ -261,6 +300,36 @@ mod tests {
         let dirs = super::registry_path_dirs();
         assert!(dirs.iter().any(|d| d.join("cmd.exe").is_file()), "registry PATH: {dirs:?}");
         assert!(dirs.iter().all(|d| !d.to_string_lossy().contains('%')), "not expanded: {dirs:?}");
+    }
+
+    #[test]
+    fn a_broken_link_is_not_a_tool_but_is_reported() {
+        // What a half-finished winget upgrade leaves: WinGet\Links\ffmpeg.exe
+        // pointing into a version folder that was deleted.
+        let dir = std::env::temp_dir().join(format!("snag-broken-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (links, good) = (dir.join("links"), dir.join("good"));
+        std::fs::create_dir_all(&links).unwrap();
+        std::fs::create_dir_all(&good).unwrap();
+        let target = dir.join("ffmpeg-9.0.2").join("ffmpeg.exe");
+        if let Err(e) = std::os::windows::fs::symlink_file(&target, links.join("tool.exe")) {
+            // Needs Developer Mode (or admin), like winget's own links.
+            eprintln!("skipped: can't create symbolic links here ({e})");
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+        let dirs = [links.clone(), good.clone()];
+        assert_eq!(super::find_in(&dirs, "tool.exe"), None);
+        assert_eq!(super::broken_links_in(&dirs, "tool.exe"), [(links.join("tool.exe"), target.clone())]);
+        // A real file further down the list is still found.
+        std::fs::write(good.join("tool.exe"), b"").unwrap();
+        assert_eq!(super::find_in(&dirs, "tool.exe"), Some(good.join("tool.exe")));
+        // Once the link's target is back, the link is the tool again.
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, b"").unwrap();
+        assert_eq!(super::find_in(&dirs, "tool.exe"), Some(links.join("tool.exe")));
+        assert!(super::broken_links_in(&dirs, "tool.exe").is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
